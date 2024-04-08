@@ -1,13 +1,13 @@
 import React from 'react';
-import CloseIcon from 'components/common/Icons/CloseIcon';
+import CloseCircleIcon from 'components/common/Icons/CloseCircleIcon';
 import IconButtonWrapper from 'components/common/Icons/IconButtonWrapper';
-import { ToastType } from 'react-hot-toast';
+import { ToastTypes } from 'lib/errorHandling';
 
 import * as S from './Alert.styled';
 
 export interface AlertProps {
   title: string;
-  type: ToastType;
+  type: ToastTypes;
   message: React.ReactNode;
   onDissmiss(): void;
 }
@@ -19,7 +19,7 @@ const Alert: React.FC<AlertProps> = ({ title, type, message, onDissmiss }) => (
       <S.Message role="contentinfo">{message}</S.Message>
     </div>
     <IconButtonWrapper role="button" onClick={onDissmiss}>
-      <CloseIcon />
+      <CloseCircleIcon />
     </IconButtonWrapper>
   </S.Alert>
 );

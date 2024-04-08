@@ -1,5 +1,8 @@
 package com.provectus.kafka.ui.model.rbac;
 
+import com.provectus.kafka.ui.model.rbac.permission.AclAction;
+import com.provectus.kafka.ui.model.rbac.permission.ApplicationConfigAction;
+import com.provectus.kafka.ui.model.rbac.permission.AuditAction;
 import com.provectus.kafka.ui.model.rbac.permission.ClusterConfigAction;
 import com.provectus.kafka.ui.model.rbac.permission.ConnectAction;
 import com.provectus.kafka.ui.model.rbac.permission.ConsumerGroupAction;
@@ -9,11 +12,14 @@ import com.provectus.kafka.ui.model.rbac.permission.TopicAction;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import lombok.Value;
 import org.springframework.util.Assert;
 
 @Value
 public class AccessContext {
+
+  Collection<ApplicationConfigAction> applicationConfigActions;
 
   String cluster;
   Collection<ClusterConfigAction> clusterConfigActions;
@@ -34,11 +40,21 @@ public class AccessContext {
 
   Collection<KsqlAction> ksqlActions;
 
+  Collection<AclAction> aclActions;
+
+  Collection<AuditAction> auditAction;
+
+  String operationName;
+  Object operationParams;
+
   public static AccessContextBuilder builder() {
     return new AccessContextBuilder();
   }
 
   public static final class AccessContextBuilder {
+    private static final String ACTIONS_NOT_PRESENT = "actions not present";
+
+    private Collection<ApplicationConfigAction> applicationConfigActions = Collections.emptySet();
     private String cluster;
     private Collection<ClusterConfigAction> clusterConfigActions = Collections.emptySet();
     private String topic;
@@ -51,8 +67,19 @@ public class AccessContext {
     private String schema;
     private Collection<SchemaAction> schemaActions = Collections.emptySet();
     private Collection<KsqlAction> ksqlActions = Collections.emptySet();
+    private Collection<AclAction> aclActions = Collections.emptySet();
+    private Collection<AuditAction> auditActions = Collections.emptySet();
+
+    private String operationName;
+    private Object operationParams;
 
     private AccessContextBuilder() {
+    }
+
+    public AccessContextBuilder applicationConfigActions(ApplicationConfigAction... actions) {
+      Assert.isTrue(actions.length > 0, ACTIONS_NOT_PRESENT);
+      this.applicationConfigActions = List.of(actions);
+      return this;
     }
 
     public AccessContextBuilder cluster(String cluster) {
@@ -61,7 +88,7 @@ public class AccessContext {
     }
 
     public AccessContextBuilder clusterConfigActions(ClusterConfigAction... actions) {
-      Assert.isTrue(actions.length > 0, "actions not present");
+      Assert.isTrue(actions.length > 0, ACTIONS_NOT_PRESENT);
       this.clusterConfigActions = List.of(actions);
       return this;
     }
@@ -72,7 +99,7 @@ public class AccessContext {
     }
 
     public AccessContextBuilder topicActions(TopicAction... actions) {
-      Assert.isTrue(actions.length > 0, "actions not present");
+      Assert.isTrue(actions.length > 0, ACTIONS_NOT_PRESENT);
       this.topicActions = List.of(actions);
       return this;
     }
@@ -83,7 +110,7 @@ public class AccessContext {
     }
 
     public AccessContextBuilder consumerGroupActions(ConsumerGroupAction... actions) {
-      Assert.isTrue(actions.length > 0, "actions not present");
+      Assert.isTrue(actions.length > 0, ACTIONS_NOT_PRESENT);
       this.consumerGroupActions = List.of(actions);
       return this;
     }
@@ -94,7 +121,7 @@ public class AccessContext {
     }
 
     public AccessContextBuilder connectActions(ConnectAction... actions) {
-      Assert.isTrue(actions.length > 0, "actions not present");
+      Assert.isTrue(actions.length > 0, ACTIONS_NOT_PRESENT);
       this.connectActions = List.of(actions);
       return this;
     }
@@ -110,25 +137,55 @@ public class AccessContext {
     }
 
     public AccessContextBuilder schemaActions(SchemaAction... actions) {
-      Assert.isTrue(actions.length > 0, "actions not present");
+      Assert.isTrue(actions.length > 0, ACTIONS_NOT_PRESENT);
       this.schemaActions = List.of(actions);
       return this;
     }
 
     public AccessContextBuilder ksqlActions(KsqlAction... actions) {
-      Assert.isTrue(actions.length > 0, "actions not present");
+      Assert.isTrue(actions.length > 0, ACTIONS_NOT_PRESENT);
       this.ksqlActions = List.of(actions);
       return this;
     }
 
+    public AccessContextBuilder aclActions(AclAction... actions) {
+      Assert.isTrue(actions.length > 0, ACTIONS_NOT_PRESENT);
+      this.aclActions = List.of(actions);
+      return this;
+    }
+
+    public AccessContextBuilder auditActions(AuditAction... actions) {
+      Assert.isTrue(actions.length > 0, ACTIONS_NOT_PRESENT);
+      this.auditActions = List.of(actions);
+      return this;
+    }
+
+    public AccessContextBuilder operationName(String operationName) {
+      this.operationName = operationName;
+      return this;
+    }
+
+    public AccessContextBuilder operationParams(Object operationParams) {
+      this.operationParams = operationParams;
+      return this;
+    }
+
+    public AccessContextBuilder operationParams(Map<String, Object> paramsMap) {
+      this.operationParams = paramsMap;
+      return this;
+    }
+
     public AccessContext build() {
-      return new AccessContext(cluster, clusterConfigActions,
+      return new AccessContext(
+          applicationConfigActions,
+          cluster, clusterConfigActions,
           topic, topicActions,
           consumerGroup, consumerGroupActions,
           connect, connectActions,
           connector,
           schema, schemaActions,
-          ksqlActions);
+          ksqlActions, aclActions, auditActions,
+          operationName, operationParams);
     }
   }
 }

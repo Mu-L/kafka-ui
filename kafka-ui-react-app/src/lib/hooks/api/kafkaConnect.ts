@@ -76,7 +76,8 @@ export function useUpdateConnectorState(props: UseConnectorProps) {
   return useMutation(
     (action: ConnectorAction) => api.updateConnectorState({ ...props, action }),
     {
-      onSuccess: () => client.invalidateQueries(connectorKey(props)),
+      onSuccess: () =>
+        client.invalidateQueries(['clusters', props.clusterName, 'connectors']),
     }
   );
 }
@@ -109,7 +110,7 @@ export function useUpdateConnectorConfig(props: UseConnectorProps) {
     }
   );
 }
-export function useCreateConnectorMutation(clusterName: ClusterName) {
+function useCreateConnectorMutation(clusterName: ClusterName) {
   const client = useQueryClient();
   return useMutation(
     (props: CreateConnectorProps) =>

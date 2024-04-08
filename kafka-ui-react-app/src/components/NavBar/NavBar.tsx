@@ -1,17 +1,56 @@
-import React from 'react';
+import React, { useContext } from 'react';
+import Select from 'components/common/Select/Select';
 import Logo from 'components/common/Logo/Logo';
 import Version from 'components/Version/Version';
 import GitIcon from 'components/common/Icons/GitIcon';
 import DiscordIcon from 'components/common/Icons/DiscordIcon';
+import AutoIcon from 'components/common/Icons/AutoIcon';
+import SunIcon from 'components/common/Icons/SunIcon';
+import MoonIcon from 'components/common/Icons/MoonIcon';
+import { ThemeModeContext } from 'components/contexts/ThemeModeContext';
 
-import * as S from './NavBar.styled';
 import UserInfo from './UserInfo/UserInfo';
+import * as S from './NavBar.styled';
 
 interface Props {
   onBurgerClick: () => void;
 }
 
+export type ThemeDropDownValue = 'auto_theme' | 'light_theme' | 'dark_theme';
+
+const options = [
+  {
+    label: (
+      <>
+        <AutoIcon />
+        <div>Auto theme</div>
+      </>
+    ),
+    value: 'auto_theme',
+  },
+  {
+    label: (
+      <>
+        <SunIcon />
+        <div>Light theme</div>
+      </>
+    ),
+    value: 'light_theme',
+  },
+  {
+    label: (
+      <>
+        <MoonIcon />
+        <div>Dark theme</div>
+      </>
+    ),
+    value: 'dark_theme',
+  },
+];
+
 const NavBar: React.FC<Props> = ({ onBurgerClick }) => {
+  const { themeMode, setThemeMode } = useContext(ThemeModeContext);
+
   return (
     <S.Navbar role="navigation" aria-label="Page Header">
       <S.NavbarBrand>
@@ -39,6 +78,12 @@ const NavBar: React.FC<Props> = ({ onBurgerClick }) => {
         </S.NavbarBrand>
       </S.NavbarBrand>
       <S.NavbarSocial>
+        <Select
+          options={options}
+          value={themeMode}
+          onChange={setThemeMode}
+          isThemeMode
+        />
         <S.SocialLink
           href="https://github.com/provectus/kafka-ui"
           target="_blank"

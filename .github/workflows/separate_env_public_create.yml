@@ -1,4 +1,4 @@
-name: Separate environment create
+name: "Infra: Feature Testing Public: Init env"
 on:
   workflow_dispatch:
     inputs:
@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: get branch name
         id: extract_branch
         run: |
@@ -45,7 +47,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
       - name: Configure AWS credentials for Kafka-UI account
-        uses: aws-actions/configure-aws-credentials@v1
+        uses: aws-actions/configure-aws-credentials@v3
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -55,7 +57,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v1
       - name: Build and push
         id: docker_build_and_push
-        uses: docker/build-push-action@v3
+        uses: docker/build-push-action@v4
         with:
           builder: ${{ steps.buildx.outputs.name }}
           context: kafka-ui-api
@@ -74,14 +76,14 @@ jobs:
     steps:
       - name: clone
         run: |
-          git clone https://kafka-ui-infra:${{ secrets.KAFKA_UI_INFRA_TOKEN }}@gitlab.provectus.com/provectus-internals/kafka-ui-infra.git
+          git clone https://infra-tech:${{ secrets.INFRA_USER_ACCESS_TOKEN }}@github.com/provectus/kafka-ui-infra.git --branch envs
 
       - name: separate env create
         run: |
           cd kafka-ui-infra/aws-infrastructure4eks/argocd/scripts
           bash separate_env_create.sh ${{ github.event.inputs.ENV_NAME }} ${{ secrets.FEATURE_TESTING_UI_PASSWORD }} ${{ needs.build.outputs.tag }}
-          git config --global user.email "kafka-ui-infra@provectus.com"
-          git config --global user.name "kafka-ui-infra"
+          git config --global user.email "infra-tech@provectus.com"
+          git config --global user.name "infra-tech"
           git add -A
           git commit -m "separate env added: ${{ github.event.inputs.ENV_NAME }}" && git push || true
 

@@ -30,6 +30,7 @@ import useBoolean from 'lib/hooks/useBoolean';
 import { RouteParamsClusterTopic } from 'lib/paths';
 import useAppParams from 'lib/hooks/useAppParams';
 import PlusIcon from 'components/common/Icons/PlusIcon';
+import EditIcon from 'components/common/Icons/EditIcon';
 import CloseIcon from 'components/common/Icons/CloseIcon';
 import ClockIcon from 'components/common/Icons/ClockIcon';
 import ArrowDownIcon from 'components/common/Icons/ArrowDownIcon';
@@ -53,11 +54,13 @@ export interface FiltersProps {
   phaseMessage?: string;
   meta: TopicMessageConsuming;
   isFetching: boolean;
+  messageEventType?: string;
   addMessage(content: { message: TopicMessage; prepend: boolean }): void;
   resetMessages(): void;
   updatePhase(phase: string): void;
   updateMeta(meta: TopicMessageConsuming): void;
   setIsFetching(status: boolean): void;
+  setMessageType(messageType: string): void;
 }
 
 export interface MessageFilters {
@@ -65,7 +68,7 @@ export interface MessageFilters {
   code: string;
 }
 
-interface ActiveMessageFilter {
+export interface ActiveMessageFilter {
   index: number;
   name: string;
   code: string;
@@ -80,13 +83,15 @@ export const SeekTypeOptions = [
 
 const Filters: React.FC<FiltersProps> = ({
   phaseMessage,
-  meta: { elapsedMs, bytesConsumed, messagesConsumed },
+  meta: { elapsedMs, bytesConsumed, messagesConsumed, filterApplyErrors },
   isFetching,
   addMessage,
   resetMessages,
   updatePhase,
   updateMeta,
   setIsFetching,
+  setMessageType,
+  messageEventType,
 }) => {
   const { clusterName, topicName } = useAppParams<RouteParamsClusterTopic>();
   const location = useLocation();
@@ -103,6 +108,8 @@ const Filters: React.FC<FiltersProps> = ({
     useContext(TopicMessagesContext);
 
   const { value: isOpen, toggle } = useBoolean();
+
+  const { value: isQuickEditOpen, toggle: toggleQuickEdit } = useBoolean();
 
   const source = React.useRef<EventSource | null>(null);
 
@@ -125,10 +132,10 @@ const Filters: React.FC<FiltersProps> = ({
     getTimestampFromSeekToParam(searchParams)
   );
   const [keySerde, setKeySerde] = React.useState<string>(
-    searchParams.get('keySerde') as string
+    searchParams.get('keySerde') || ''
   );
   const [valueSerde, setValueSerde] = React.useState<string>(
-    searchParams.get('valueSerde') as string
+    searchParams.get('valueSerde') || ''
   );
 
   const [savedFilters, setSavedFilters] = React.useState<MessageFilters[]>(
@@ -181,6 +188,7 @@ const Filters: React.FC<FiltersProps> = ({
   const handleClearAllFilters = () => {
     setCurrentSeekType(SeekType.OFFSET);
     setOffset('');
+    setTimestamp(null);
     setQuery('');
     changeSeekDirection(SeekDirection.FORWARD);
     getSelectedPartitionsFromSeekToParam(searchParams, partitions);
@@ -206,8 +214,8 @@ const Filters: React.FC<FiltersProps> = ({
       limit: PER_PAGE,
       page: page || 0,
       seekDirection,
-      keySerde: keySerde || (searchParams.get('keySerde') as string),
-      valueSerde: valueSerde || (searchParams.get('valueSerde') as string),
+      keySerde: keySerde || searchParams.get('keySerde') || '',
+      valueSerde: valueSerde || searchParams.get('valueSerde') || '',
     };
 
     if (isSeekTypeControlVisible) {
@@ -231,7 +239,14 @@ const Filters: React.FC<FiltersProps> = ({
         props.seekType = SeekType.TIMESTAMP;
       }
 
-      if (selectedPartitions.length !== partitions.length) {
+      const isSeekTypeWithSeekTo =
+        props.seekType === SeekType.TIMESTAMP ||
+        props.seekType === SeekType.OFFSET;
+
+      if (
+        selectedPartitions.length !== partitions.length ||
+        isSeekTypeWithSeekTo
+      ) {
         // not everything in the partition is selected
         props.seekTo = selectedPartitions.map(({ value }) => {
           const offsetProperty =
@@ -296,31 +311,43 @@ const Filters: React.FC<FiltersProps> = ({
     setActiveFilter({ index, ...newActiveFilter });
     setQueryType(MessageFilterType.GROOVY_SCRIPT);
   };
+
+  const composeMessageFilter = (filter: FilterEdit): ActiveMessageFilter => ({
+    index: filter.index,
+    name: filter.filter.name,
+    code: filter.filter.code,
+  });
+
+  const storeAsActiveFilter = (filter: FilterEdit) => {
+    const messageFilter = JSON.stringify(composeMessageFilter(filter));
+    localStorage.setItem('activeFilter', messageFilter);
+  };
+
   const editSavedFilter = (filter: FilterEdit) => {
     const filters = [...savedFilters];
     filters[filter.index] = filter.filter;
     if (activeFilter.name && activeFilter.index === filter.index) {
-      setActiveFilter({
-        index: filter.index,
-        name: filter.filter.name,
-        code: filter.filter.code,
-      });
-      localStorage.setItem(
-        'activeFilter',
-        JSON.stringify({
-          index: filter.index,
-          name: filter.filter.name,
-          code: filter.filter.code,
-        })
-      );
+      setActiveFilter(composeMessageFilter(filter));
+      storeAsActiveFilter(filter);
     }
     localStorage.setItem('savedFilters', JSON.stringify(filters));
     setSavedFilters(filters);
   };
+
+  const editCurrentFilter = (filter: FilterEdit) => {
+    if (filter.index < 0) {
+      setActiveFilter(composeMessageFilter(filter));
+      storeAsActiveFilter(filter);
+    } else {
+      editSavedFilter(filter);
+    }
+  };
   // eslint-disable-next-line consistent-return
   React.useEffect(() => {
     if (location.search?.length !== 0) {
-      const url = `${BASE_PARAMS.basePath}/api/clusters/${clusterName}/topics/${topicName}/messages${location.search}`;
+      const url = `${BASE_PARAMS.basePath}/api/clusters/${encodeURIComponent(
+        clusterName
+      )}/topics/${topicName}/messages${location.search}`;
       const sse = new EventSource(url);
 
       source.current = sse;
@@ -349,6 +376,12 @@ const Filters: React.FC<FiltersProps> = ({
             break;
           case TopicMessageEventTypeEnum.CONSUMING:
             if (consuming) updateMeta(consuming);
+            break;
+          case TopicMessageEventTypeEnum.DONE:
+            if (consuming && type) {
+              setMessageType(type);
+              updateMeta(consuming);
+            }
             break;
           default:
         }
@@ -517,19 +550,38 @@ const Filters: React.FC<FiltersProps> = ({
       <S.ActiveSmartFilterWrapper>
         <Search placeholder="Search" disabled={isTailing} />
 
-        <Button buttonType="primary" buttonSize="M" onClick={toggle}>
+        <Button buttonType="secondary" buttonSize="M" onClick={toggle}>
           <PlusIcon />
           Add Filters
         </Button>
         {activeFilter.name && (
           <S.ActiveSmartFilter data-testid="activeSmartFilter">
-            {activeFilter.name}
-            <S.DeleteSavedFilterIcon onClick={deleteActiveFilter}>
+            <S.SmartFilterName>{activeFilter.name}</S.SmartFilterName>
+            <S.EditSmartFilterIcon
+              data-testid="editActiveSmartFilterBtn"
+              onClick={toggleQuickEdit}
+            >
+              <EditIcon />
+            </S.EditSmartFilterIcon>
+            <S.DeleteSmartFilterIcon onClick={deleteActiveFilter}>
               <CloseIcon />
-            </S.DeleteSavedFilterIcon>
+            </S.DeleteSmartFilterIcon>
           </S.ActiveSmartFilter>
         )}
       </S.ActiveSmartFilterWrapper>
+      {isQuickEditOpen && (
+        <FilterModal
+          quickEditMode
+          activeFilter={activeFilter}
+          toggleIsOpen={toggleQuickEdit}
+          editSavedFilter={editCurrentFilter}
+          filters={[]}
+          addFilter={() => null}
+          deleteFilter={() => null}
+          activeFilterHandler={() => null}
+        />
+      )}
+
       {isOpen && (
         <FilterModal
           toggleIsOpen={toggle}
@@ -542,11 +594,12 @@ const Filters: React.FC<FiltersProps> = ({
         />
       )}
       <S.FiltersMetrics>
-        <p style={{ fontSize: 14 }}>
+        <S.Message>
           {seekDirection !== SeekDirection.TAILING &&
             isFetching &&
             phaseMessage}
-        </p>
+          {!isFetching && messageEventType}
+        </S.Message>
         <S.MessageLoading isLive={isTailing}>
           <S.MessageLoadingSpinner isFetching={isFetching} />
           Loading messages.
@@ -577,6 +630,11 @@ const Filters: React.FC<FiltersProps> = ({
           </S.MetricsIcon>
           <span>{messagesConsumed} messages consumed</span>
         </S.Metric>
+        {!!filterApplyErrors && (
+          <S.Metric title="Errors">
+            <span>{filterApplyErrors} errors</span>
+          </S.Metric>
+        )}
       </S.FiltersMetrics>
     </S.FiltersWrapper>
   );

@@ -9,6 +9,8 @@ import {
   KafkaConnectApi,
   ConsumerGroupsApi,
   AuthorizationApi,
+  ApplicationConfigApi,
+  AclsApi,
 } from 'generated-sources';
 import { BASE_PARAMS } from 'lib/constants';
 
@@ -22,4 +24,6 @@ export const messagesApiClient = new MessagesApi(apiClientConf);
 export const clustersApiClient = new ClustersApi(apiClientConf);
 export const kafkaConnectApiClient = new KafkaConnectApi(apiClientConf);
 export const consumerGroupsApiClient = new ConsumerGroupsApi(apiClientConf);
-export const AuthorizationApiClient = new AuthorizationApi(apiClientConf);
+export const authApiClient = new AuthorizationApi(apiClientConf);
+export const appConfigApiClient = new ApplicationConfigApi(apiClientConf);
+export const aclApiClient = new AclsApi(apiClientConf);

@@ -7,6 +7,7 @@ This repository is for E2E UI automation.
 - [Prerequisites](#prerequisites)
 - [How to install](#how-to-install)
 - [How to run checks](#how-to-run-checks)
+- [Qase.io integration (for internal users)](#qase-integration)
 - [Reporting](#reporting)
 - [Environments setup](#environments-setup)
 - [Test Data](#test-data)
@@ -26,7 +27,7 @@ This repository is for E2E UI automation.
 ```
 git clone https://github.com/provectus/kafka-ui.git
 cd  kafka-ui-e2e-checks
-docker pull selenoid/vnc:chrome_86.0  
+docker pull selenoid/vnc_chrome:103.0 
 ```
 
 ### How to run checks
@@ -35,6 +36,7 @@ docker pull selenoid/vnc:chrome_86.0
 
 ```
 cd kafka-ui
+docker-compose -f kafka-ui-e2e-checks/docker/selenoid-local.yaml up -d
 docker-compose -f documentation/compose/e2e-tests.yaml up -d
 ```
 
@@ -49,6 +51,18 @@ docker-compose -f documentation/compose/e2e-tests.yaml up -d
 ```
 -Dbrowser=local
 ```
+
+Expected Location of Chrome
+```
+Linux:	                    /usr/bin/google-chrome1
+Mac:	                    /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome
+Windows XP:                 %HOMEPATH%\Local Settings\Application Data\Google\Chrome\Application\chrome.exe
+Windows Vista and newer:    C:\Users%USERNAME%\AppData\Local\Google\Chrome\Application\chrome.exe
+```
+
+### Qase integration
+
+Found instruction for Qase.io integration (for internal use only) at `kafka-ui-e2e-checks/QASE.md`
 
 ### Reporting
 

@@ -7,14 +7,16 @@ export const clusterName = 'local';
 export const validPermission = {
   resource: ResourceType.TOPIC,
   action: Action.CREATE,
+  value: 'topic',
 };
 
 export const invalidPermission = {
   resource: ResourceType.SCHEMA,
   action: Action.DELETE,
+  value: 'test',
 };
 
-export const roles = [
+const roles = [
   {
     ...validPermission,
     actions: [validPermission.action],

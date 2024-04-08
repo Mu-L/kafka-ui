@@ -2,6 +2,7 @@ import {
   topicsApiClient as api,
   messagesApiClient as messagesApi,
   consumerGroupsApiClient,
+  messagesApiClient,
 } from 'lib/api';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -75,7 +76,6 @@ const formatTopicCreation = (form: TopicFormData): TopicCreation => {
     partitions,
     replicationFactor,
     cleanupPolicy,
-    retentionBytes,
     retentionMs,
     maxMessageBytes,
     minInSyncReplicas,
@@ -85,7 +85,6 @@ const formatTopicCreation = (form: TopicFormData): TopicCreation => {
   const configs = {
     'cleanup.policy': cleanupPolicy,
     'retention.ms': retentionMs.toString(),
-    'retention.bytes': retentionBytes.toString(),
     'max.message.bytes': maxMessageBytes.toString(),
     'min.insync.replicas': minInSyncReplicas.toString(),
     ...Object.values(customParams || {}).reduce(topicReducer, {}),
@@ -121,9 +120,6 @@ export function useCreateTopicMutation(clusterName: ClusterName) {
       }),
     {
       onSuccess: () => {
-        showSuccessAlert({
-          message: `Topic successfully created.`,
-        });
         client.invalidateQueries(topicKeys.all(clusterName));
       },
     }
@@ -233,6 +229,34 @@ export function useDeleteTopic(clusterName: ClusterName) {
     }
   );
 }
+
+export function useClearTopicMessages(
+  clusterName: ClusterName,
+  partitions?: number[]
+) {
+  const client = useQueryClient();
+  return useMutation(
+    async (topicName: Topic['name']) => {
+      await messagesApiClient.deleteTopicMessages({
+        clusterName,
+        partitions,
+        topicName,
+      });
+      return topicName;
+    },
+
+    {
+      onSuccess: (topicName) => {
+        showSuccessAlert({
+          id: `message-${topicName}-${clusterName}-${partitions}`,
+          message: `${topicName} messages have been successfully cleared!`,
+        });
+        client.invalidateQueries(topicKeys.all(clusterName));
+      },
+    }
+  );
+}
+
 export function useRecreateTopic(props: GetTopicDetailsRequest) {
   const client = useQueryClient();
   return useMutation(() => api.recreateTopic(props), {
@@ -278,6 +302,11 @@ export function useTopicAnalysis(
       useErrorBoundary: true,
       retry: false,
       suspense: false,
+      onError: (error: Response) => {
+        if (error.status !== 404) {
+          showServerError(error as Response);
+        }
+      },
     }
   );
 }
@@ -285,9 +314,6 @@ export function useAnalyzeTopic(props: GetTopicDetailsRequest) {
   const client = useQueryClient();
   return useMutation(() => api.analyzeTopic(props), {
     onSuccess: () => {
-      showSuccessAlert({
-        message: `Topic analysis successfully started`,
-      });
       client.invalidateQueries(topicKeys.statistics(props));
     },
   });

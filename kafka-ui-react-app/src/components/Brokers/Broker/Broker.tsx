@@ -19,6 +19,8 @@ import BrokerLogdir from 'components/Brokers/Broker/BrokerLogdir/BrokerLogdir';
 import BrokerMetrics from 'components/Brokers/Broker/BrokerMetrics/BrokerMetrics';
 import Navbar from 'components/common/Navigation/Navbar.styled';
 import PageLoader from 'components/common/PageLoader/PageLoader';
+import { ActionNavLink } from 'components/common/ActionComponent';
+import { Action, ResourceType } from 'generated-sources';
 
 import Configs from './Configs/Configs';
 
@@ -44,7 +46,10 @@ const Broker: React.FC = () => {
       <Metrics.Wrapper>
         <Metrics.Section>
           <Metrics.Indicator label="Segment Size">
-            <BytesFormatted value={brokerDiskUsage?.segmentSize} />
+            <BytesFormatted
+              value={brokerDiskUsage?.segmentSize}
+              precision={2}
+            />
           </Metrics.Indicator>
           <Metrics.Indicator label="Segment Count">
             {brokerDiskUsage?.segmentCount}
@@ -68,12 +73,16 @@ const Broker: React.FC = () => {
         >
           Configs
         </NavLink>
-        <NavLink
+        <ActionNavLink
           to={clusterBrokerMetricsPath(clusterName, brokerId)}
           className={({ isActive }) => (isActive ? 'is-active' : '')}
+          permission={{
+            resource: ResourceType.CLUSTERCONFIG,
+            action: Action.VIEW,
+          }}
         >
           Metrics
-        </NavLink>
+        </ActionNavLink>
       </Navbar>
       <Suspense fallback={<PageLoader />}>
         <Routes>

@@ -4,17 +4,20 @@ import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 import static org.apache.kafka.clients.admin.ListOffsetsResult.ListOffsetsResultInfo;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableTable;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Table;
 import com.provectus.kafka.ui.exception.IllegalEntityStateException;
 import com.provectus.kafka.ui.exception.NotFoundException;
 import com.provectus.kafka.ui.exception.ValidationException;
-import com.provectus.kafka.ui.util.NumberUtil;
+import com.provectus.kafka.ui.util.KafkaVersion;
 import com.provectus.kafka.ui.util.annotation.KafkaClientInternalsDependant;
 import java.io.Closeable;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -28,11 +31,13 @@ import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import javax.annotation.Nullable;
 import lombok.AccessLevel;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Getter;
-import lombok.RequiredArgsConstructor;
 import lombok.Value;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.AdminClient;
@@ -51,6 +56,7 @@ import org.apache.kafka.clients.admin.NewPartitionReassignment;
 import org.apache.kafka.clients.admin.NewPartitions;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.OffsetSpec;
+import org.apache.kafka.clients.admin.ProducerState;
 import org.apache.kafka.clients.admin.RecordsToDelete;
 import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
@@ -60,14 +66,21 @@ import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.TopicPartitionInfo;
 import org.apache.kafka.common.TopicPartitionReplica;
+import org.apache.kafka.common.acl.AccessControlEntryFilter;
+import org.apache.kafka.common.acl.AclBinding;
+import org.apache.kafka.common.acl.AclBindingFilter;
 import org.apache.kafka.common.acl.AclOperation;
 import org.apache.kafka.common.config.ConfigResource;
+import org.apache.kafka.common.errors.ClusterAuthorizationException;
 import org.apache.kafka.common.errors.GroupIdNotFoundException;
 import org.apache.kafka.common.errors.GroupNotEmptyException;
 import org.apache.kafka.common.errors.InvalidRequestException;
+import org.apache.kafka.common.errors.SecurityDisabledException;
+import org.apache.kafka.common.errors.TopicAuthorizationException;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 import org.apache.kafka.common.errors.UnsupportedVersionException;
 import org.apache.kafka.common.requests.DescribeLogDirsResponse;
+import org.apache.kafka.common.resource.ResourcePatternFilter;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -76,28 +89,32 @@ import reactor.util.function.Tuples;
 
 
 @Slf4j
-@RequiredArgsConstructor
+@AllArgsConstructor
 public class ReactiveAdminClient implements Closeable {
 
-  private enum SupportedFeature {
+  public enum SupportedFeature {
     INCREMENTAL_ALTER_CONFIGS(2.3f),
     CONFIG_DOCUMENTATION_RETRIEVAL(2.6f),
-    DESCRIBE_CLUSTER_INCLUDE_AUTHORIZED_OPERATIONS(2.3f);
+    DESCRIBE_CLUSTER_INCLUDE_AUTHORIZED_OPERATIONS(2.3f),
+    AUTHORIZED_SECURITY_ENABLED(ReactiveAdminClient::isAuthorizedSecurityEnabled);
 
-    private final float sinceVersion;
+    private final BiFunction<AdminClient, Float, Mono<Boolean>> predicate;
 
-    SupportedFeature(float sinceVersion) {
-      this.sinceVersion = sinceVersion;
+    SupportedFeature(BiFunction<AdminClient, Float, Mono<Boolean>> predicate) {
+      this.predicate = predicate;
     }
 
-    static Set<SupportedFeature> forVersion(float kafkaVersion) {
-      return Arrays.stream(SupportedFeature.values())
-          .filter(f -> kafkaVersion >= f.sinceVersion)
+    SupportedFeature(float fromVersion) {
+      this.predicate = (admin, ver) -> Mono.just(ver != null && ver >= fromVersion);
+    }
+
+    static Mono<Set<SupportedFeature>> forVersion(AdminClient ac, String kafkaVersionStr) {
+      @Nullable Float kafkaVersion = KafkaVersion.parse(kafkaVersionStr).orElse(null);
+      return Flux.fromArray(SupportedFeature.values())
+          .flatMap(f -> f.predicate.apply(ac, kafkaVersion).map(enabled -> Tuples.of(f, enabled)))
+          .filter(Tuple2::getT2)
+          .map(Tuple2::getT1)
           .collect(Collectors.toSet());
-    }
-
-    static Set<SupportedFeature> defaultFeatures() {
-      return Set.of();
     }
   }
 
@@ -107,30 +124,66 @@ public class ReactiveAdminClient implements Closeable {
     Node controller;
     String clusterId;
     Collection<Node> nodes;
+    @Nullable // null, if ACL is disabled
     Set<AclOperation> authorizedOperations;
   }
 
-  public static Mono<ReactiveAdminClient> create(AdminClient adminClient) {
-    return getClusterVersion(adminClient)
-        .map(ver ->
-            new ReactiveAdminClient(
-                adminClient,
-                ver,
-                getSupportedUpdateFeaturesForVersion(ver)));
+  @Builder
+  private record ConfigRelatedInfo(String version,
+                                   Set<SupportedFeature> features,
+                                   boolean topicDeletionIsAllowed) {
+
+    static final Duration UPDATE_DURATION = Duration.of(1, ChronoUnit.HOURS);
+
+    private static Mono<ConfigRelatedInfo> extract(AdminClient ac) {
+      return ReactiveAdminClient.describeClusterImpl(ac, Set.of())
+          .flatMap(desc -> {
+            // choosing node from which we will get configs (starting with controller)
+            var targetNodeId = Optional.ofNullable(desc.controller)
+                .map(Node::id)
+                .orElse(desc.getNodes().iterator().next().id());
+            return loadBrokersConfig(ac, List.of(targetNodeId))
+                .map(map -> map.isEmpty() ? List.<ConfigEntry>of() : map.get(targetNodeId))
+                .flatMap(configs -> {
+                  String version = "1.0-UNKNOWN";
+                  boolean topicDeletionEnabled = true;
+                  for (ConfigEntry entry : configs) {
+                    if (entry.name().contains("inter.broker.protocol.version")) {
+                      version = entry.value();
+                    }
+                    if (entry.name().equals("delete.topic.enable")) {
+                      topicDeletionEnabled = Boolean.parseBoolean(entry.value());
+                    }
+                  }
+                  final String finalVersion = version;
+                  final boolean finalTopicDeletionEnabled = topicDeletionEnabled;
+                  return SupportedFeature.forVersion(ac, version)
+                      .map(features -> new ConfigRelatedInfo(finalVersion, features, finalTopicDeletionEnabled));
+                });
+          })
+          .cache(UPDATE_DURATION);
+    }
   }
 
-  private static Set<SupportedFeature> getSupportedUpdateFeaturesForVersion(String versionStr) {
-    try {
-      float version = NumberUtil.parserClusterVersion(versionStr);
-      return SupportedFeature.forVersion(version);
-    } catch (NumberFormatException e) {
-      return SupportedFeature.defaultFeatures();
-    }
+  public static Mono<ReactiveAdminClient> create(AdminClient adminClient) {
+    Mono<ConfigRelatedInfo> configRelatedInfoMono = ConfigRelatedInfo.extract(adminClient);
+    return configRelatedInfoMono.map(info -> new ReactiveAdminClient(adminClient, configRelatedInfoMono, info));
+  }
+
+
+  private static Mono<Boolean> isAuthorizedSecurityEnabled(AdminClient ac, @Nullable Float kafkaVersion) {
+    return toMono(ac.describeAcls(AclBindingFilter.ANY).values())
+        .thenReturn(true)
+        .doOnError(th -> !(th instanceof SecurityDisabledException)
+                && !(th instanceof InvalidRequestException)
+                && !(th instanceof UnsupportedVersionException),
+            th -> log.debug("Error checking if security enabled", th))
+        .onErrorReturn(false);
   }
 
   // NOTE: if KafkaFuture returns null, that Mono will be empty(!), since Reactor does not support nullable results
   // (see MonoSink.success(..) javadoc for details)
-  private static <T> Mono<T> toMono(KafkaFuture<T> future) {
+  public static <T> Mono<T> toMono(KafkaFuture<T> future) {
     return Mono.<T>create(sink -> future.whenComplete((res, ex) -> {
       if (ex != null) {
         // KafkaFuture doc is unclear about what exception wrapper will be used
@@ -156,8 +209,13 @@ public class ReactiveAdminClient implements Closeable {
 
   @Getter(AccessLevel.PACKAGE) // visible for testing
   private final AdminClient client;
-  private final String version;
-  private final Set<SupportedFeature> features;
+  private final Mono<ConfigRelatedInfo> configRelatedInfoMono;
+
+  private volatile ConfigRelatedInfo configRelatedInfo;
+
+  public Set<SupportedFeature> getClusterFeatures() {
+    return configRelatedInfo.features();
+  }
 
   public Mono<Set<String>> listTopics(boolean listInternal) {
     return toMono(client.listTopics(new ListTopicsOptions().listInternal(listInternal)).names());
@@ -168,7 +226,20 @@ public class ReactiveAdminClient implements Closeable {
   }
 
   public String getVersion() {
-    return version;
+    return configRelatedInfo.version();
+  }
+
+  public boolean isTopicDeletionEnabled() {
+    return configRelatedInfo.topicDeletionIsAllowed();
+  }
+
+  public Mono<Void> updateInternalStats(@Nullable Node controller) {
+    if (controller == null) {
+      return Mono.empty();
+    }
+    return configRelatedInfoMono
+        .doOnNext(info -> this.configRelatedInfo = info)
+        .then();
   }
 
   public Mono<Map<String, List<ConfigEntry>>> getTopicsConfig() {
@@ -176,8 +247,9 @@ public class ReactiveAdminClient implements Closeable {
   }
 
   //NOTE: skips not-found topics (for which UnknownTopicOrPartitionException was thrown by AdminClient)
+  //and topics for which DESCRIBE_CONFIGS permission is not set (TopicAuthorizationException was thrown)
   public Mono<Map<String, List<ConfigEntry>>> getTopicsConfig(Collection<String> topicNames, boolean includeDoc) {
-    var includeDocFixed = features.contains(SupportedFeature.CONFIG_DOCUMENTATION_RETRIEVAL) && includeDoc;
+    var includeDocFixed = includeDoc && getClusterFeatures().contains(SupportedFeature.CONFIG_DOCUMENTATION_RETRIEVAL);
     // we need to partition calls, because it can lead to AdminClient timeouts in case of large topics count
     return partitionCalls(
         topicNames,
@@ -196,7 +268,8 @@ public class ReactiveAdminClient implements Closeable {
         client.describeConfigs(
             resources,
             new DescribeConfigsOptions().includeSynonyms(true).includeDocumentation(includeDoc)).values(),
-        UnknownTopicOrPartitionException.class
+        UnknownTopicOrPartitionException.class,
+        TopicAuthorizationException.class
     ).map(config -> config.entrySet().stream()
         .collect(toMap(
             c -> c.getKey().name(),
@@ -208,11 +281,24 @@ public class ReactiveAdminClient implements Closeable {
         .map(brokerId -> new ConfigResource(ConfigResource.Type.BROKER, Integer.toString(brokerId)))
         .collect(toList());
     return toMono(client.describeConfigs(resources).all())
-        .doOnError(InvalidRequestException.class,
-            th -> log.trace("Error while getting broker {} configs", brokerIds, th))
-        // some kafka backends (like MSK serverless) do not support broker's configs retrieval,
-        // in that case InvalidRequestException will be thrown
-        .onErrorResume(InvalidRequestException.class, th -> Mono.just(Map.of()))
+        // some kafka backends don't support broker's configs retrieval,
+        // and throw various exceptions on describeConfigs() call
+        .onErrorResume(th -> th instanceof InvalidRequestException // MSK Serverless
+                || th instanceof UnknownTopicOrPartitionException, // Azure event hub
+            th -> {
+              log.trace("Error while getting configs for brokers {}", brokerIds, th);
+              return Mono.just(Map.of());
+            })
+        // there are situations when kafka-ui user has no DESCRIBE_CONFIGS permission on cluster
+        .onErrorResume(ClusterAuthorizationException.class, th -> {
+          log.trace("AuthorizationException while getting configs for brokers {}", brokerIds, th);
+          return Mono.just(Map.of());
+        })
+        // catching all remaining exceptions, but logging on WARN level
+        .onErrorResume(th -> true, th -> {
+          log.warn("Unexpected error while getting configs for brokers {}", brokerIds, th);
+          return Mono.just(Map.of());
+        })
         .map(config -> config.entrySet().stream()
             .collect(toMap(
                 c -> Integer.valueOf(c.getKey().name()),
@@ -242,13 +328,16 @@ public class ReactiveAdminClient implements Closeable {
 
   private Mono<Map<String, TopicDescription>> describeTopicsImpl(Collection<String> topics) {
     return toMonoWithExceptionFilter(
-        client.describeTopics(topics).values(),
-        UnknownTopicOrPartitionException.class
+        client.describeTopics(topics).topicNameValues(),
+        UnknownTopicOrPartitionException.class,
+        // we only describe topics that we see from listTopics() API, so we should have permission to do it,
+        // but also adding this exception here for rare case when access restricted after we called listTopics()
+        TopicAuthorizationException.class
     );
   }
 
   /**
-   * Returns TopicDescription mono, or Empty Mono if topic not found.
+   * Returns TopicDescription mono, or Empty Mono if topic not visible.
    */
   public Mono<TopicDescription> describeTopic(String topic) {
     return describeTopics(List.of(topic)).flatMap(m -> Mono.justOrEmpty(m.get(topic)));
@@ -262,10 +351,11 @@ public class ReactiveAdminClient implements Closeable {
    * such topics in resulting map.
    * <p/>
    * This method converts input map into Mono[Map] ignoring keys for which KafkaFutures
-   * finished with <code>clazz</code> exception and empty Monos.
+   * finished with <code>classes</code> exceptions and empty Monos.
    */
+  @SafeVarargs
   static <K, V> Mono<Map<K, V>> toMonoWithExceptionFilter(Map<K, KafkaFuture<V>> values,
-                                                          Class<? extends KafkaException> clazz) {
+                                                          Class<? extends KafkaException>... classes) {
     if (values.isEmpty()) {
       return Mono.just(Map.of());
     }
@@ -277,7 +367,7 @@ public class ReactiveAdminClient implements Closeable {
                 .defaultIfEmpty(Tuples.of(e.getKey(), Optional.empty())) //tracking empty Monos
                 .onErrorResume(
                     // tracking Monos with suppressible error
-                    th -> th.getClass().isAssignableFrom(clazz),
+                    th -> Stream.of(classes).anyMatch(clazz -> th.getClass().isAssignableFrom(clazz)),
                     th -> Mono.just(Tuples.of(e.getKey(), Optional.empty()))))
         .toList();
 
@@ -300,6 +390,7 @@ public class ReactiveAdminClient implements Closeable {
       Collection<Integer> brokerIds) {
     return toMono(client.describeLogDirs(brokerIds).all())
         .onErrorResume(UnsupportedVersionException.class, th -> Mono.just(Map.of()))
+        .onErrorResume(ClusterAuthorizationException.class, th -> Mono.just(Map.of()))
         .onErrorResume(th -> true, th -> {
           log.warn("Error while calling describeLogDirs", th);
           return Mono.just(Map.of());
@@ -307,7 +398,7 @@ public class ReactiveAdminClient implements Closeable {
   }
 
   public Mono<ClusterDescription> describeCluster() {
-    return describeClusterImpl(client, features);
+    return describeClusterImpl(client, getClusterFeatures());
   }
 
   private static Mono<ClusterDescription> describeClusterImpl(AdminClient client, Set<SupportedFeature> features) {
@@ -327,23 +418,6 @@ public class ReactiveAdminClient implements Closeable {
           )
         )
     );
-  }
-
-  private static Mono<String> getClusterVersion(AdminClient client) {
-    return describeClusterImpl(client, Set.of())
-        // choosing node from which we will get configs (starting with controller)
-        .flatMap(descr -> descr.controller != null
-            ? Mono.just(descr.controller)
-            : Mono.justOrEmpty(descr.nodes.stream().findFirst())
-        )
-        .flatMap(node -> loadBrokersConfig(client, List.of(node.id())))
-        .flatMap(configs -> configs.values().stream()
-            .flatMap(Collection::stream)
-            .filter(entry -> entry.name().contains("inter.broker.protocol.version"))
-            .findFirst()
-            .map(configEntry -> Mono.just(configEntry.value()))
-            .orElse(Mono.empty()))
-        .switchIfEmpty(Mono.just("1.0-UNKNOWN"));
   }
 
   public Mono<Void> deleteConsumerGroups(Collection<String> groupIds) {
@@ -379,7 +453,7 @@ public class ReactiveAdminClient implements Closeable {
   // NOTE: places whole current topic config with new one. Entries that were present in old config,
   // but missed in new will be set to default
   public Mono<Void> updateTopicConfig(String topicName, Map<String, String> configs) {
-    if (features.contains(SupportedFeature.INCREMENTAL_ALTER_CONFIGS)) {
+    if (getClusterFeatures().contains(SupportedFeature.INCREMENTAL_ALTER_CONFIGS)) {
       return getTopicsConfigImpl(List.of(topicName), false)
           .map(conf -> conf.getOrDefault(topicName, List.of()))
           .flatMap(currentConfigs -> incrementalAlterConfig(topicName, currentConfigs, configs));
@@ -476,6 +550,14 @@ public class ReactiveAdminClient implements Closeable {
         .flatMap(parts -> listOffsetsUnsafe(parts, offsetSpec));
   }
 
+  /**
+   * List offset for the specified topics, skipping no-leader partitions.
+   */
+  public Mono<Map<TopicPartition, Long>> listOffsets(Collection<TopicDescription> topicDescriptions,
+                                                     OffsetSpec offsetSpec) {
+    return listOffsetsUnsafe(filterPartitionsWithLeaderCheck(topicDescriptions, p -> true, false), offsetSpec);
+  }
+
   private Mono<Collection<TopicPartition>> filterPartitionsWithLeaderCheck(Collection<TopicPartition> partitions,
                                                                            boolean failOnUnknownLeader) {
     var targetTopics = partitions.stream().map(TopicPartition::topic).collect(Collectors.toSet());
@@ -485,34 +567,44 @@ public class ReactiveAdminClient implements Closeable {
                 descriptions.values(), partitions::contains, failOnUnknownLeader));
   }
 
-  private Set<TopicPartition> filterPartitionsWithLeaderCheck(Collection<TopicDescription> topicDescriptions,
+  @VisibleForTesting
+  static Set<TopicPartition> filterPartitionsWithLeaderCheck(Collection<TopicDescription> topicDescriptions,
                                                               Predicate<TopicPartition> partitionPredicate,
                                                               boolean failOnUnknownLeader) {
     var goodPartitions = new HashSet<TopicPartition>();
     for (TopicDescription description : topicDescriptions) {
+      var goodTopicPartitions = new ArrayList<TopicPartition>();
       for (TopicPartitionInfo partitionInfo : description.partitions()) {
         TopicPartition topicPartition = new TopicPartition(description.name(), partitionInfo.partition());
-        if (!partitionPredicate.test(topicPartition)) {
-          continue;
+        if (partitionInfo.leader() == null) {
+          if (failOnUnknownLeader) {
+            throw new ValidationException(String.format("Topic partition %s has no leader", topicPartition));
+          } else {
+            // if ANY of topic partitions has no leader - we have to skip all topic partitions
+            goodTopicPartitions.clear();
+            break;
+          }
         }
-        if (partitionInfo.leader() != null) {
-          goodPartitions.add(topicPartition);
-        } else if (failOnUnknownLeader) {
-          throw new ValidationException(String.format("Topic partition %s has no leader", topicPartition));
+        if (partitionPredicate.test(topicPartition)) {
+          goodTopicPartitions.add(topicPartition);
         }
       }
+      goodPartitions.addAll(goodTopicPartitions);
     }
     return goodPartitions;
   }
 
-  // 1. NOTE(!): should only apply for partitions with existing leader,
+  // 1. NOTE(!): should only apply for partitions from topics where all partitions have leaders,
   //    otherwise AdminClient will try to fetch topic metadata, fail and retry infinitely (until timeout)
   // 2. NOTE(!): Skips partitions that were not initialized yet
   //    (UnknownTopicOrPartitionException thrown, ex. after topic creation)
   // 3. TODO: check if it is a bug that AdminClient never throws LeaderNotAvailableException and just retrying instead
   @KafkaClientInternalsDependant
-  public Mono<Map<TopicPartition, Long>> listOffsetsUnsafe(Collection<TopicPartition> partitions,
-                                                           OffsetSpec offsetSpec) {
+  @VisibleForTesting
+  Mono<Map<TopicPartition, Long>> listOffsetsUnsafe(Collection<TopicPartition> partitions, OffsetSpec offsetSpec) {
+    if (partitions.isEmpty()) {
+      return Mono.just(Map.of());
+    }
 
     Function<Collection<TopicPartition>, Mono<Map<TopicPartition, Long>>> call =
         parts -> {
@@ -535,6 +627,22 @@ public class ReactiveAdminClient implements Closeable {
     );
   }
 
+  public Mono<Collection<AclBinding>> listAcls(ResourcePatternFilter filter) {
+    Preconditions.checkArgument(getClusterFeatures().contains(SupportedFeature.AUTHORIZED_SECURITY_ENABLED));
+    return toMono(client.describeAcls(new AclBindingFilter(filter, AccessControlEntryFilter.ANY)).values());
+  }
+
+  public Mono<Void> createAcls(Collection<AclBinding> aclBindings) {
+    Preconditions.checkArgument(getClusterFeatures().contains(SupportedFeature.AUTHORIZED_SECURITY_ENABLED));
+    return toMono(client.createAcls(aclBindings).all());
+  }
+
+  public Mono<Void> deleteAcls(Collection<AclBinding> aclBindings) {
+    Preconditions.checkArgument(getClusterFeatures().contains(SupportedFeature.AUTHORIZED_SECURITY_ENABLED));
+    var filters = aclBindings.stream().map(AclBinding::toFilter).collect(Collectors.toSet());
+    return toMono(client.deleteAcls(filters).all()).then();
+  }
+
   public Mono<Void> updateBrokerConfigByName(Integer brokerId, String name, String value) {
     ConfigResource cr = new ConfigResource(ConfigResource.Type.BROKER, String.valueOf(brokerId));
     AlterConfigOp op = new AlterConfigOp(new ConfigEntry(name, value), AlterConfigOp.OpType.SET);
@@ -550,6 +658,21 @@ public class ReactiveAdminClient implements Closeable {
 
   public Mono<Void> alterReplicaLogDirs(Map<TopicPartitionReplica, String> replicaAssignment) {
     return toMono(client.alterReplicaLogDirs(replicaAssignment).all());
+  }
+
+  // returns tp -> list of active producer's states (if any)
+  public Mono<Map<TopicPartition, List<ProducerState>>> getActiveProducersState(String topic) {
+    return describeTopic(topic)
+        .map(td -> client.describeProducers(
+                IntStream.range(0, td.partitions().size())
+                    .mapToObj(i -> new TopicPartition(topic, i))
+                    .toList()
+            ).all()
+        )
+        .flatMap(ReactiveAdminClient::toMono)
+        .map(map -> map.entrySet().stream()
+            .filter(e -> !e.getValue().activeProducers().isEmpty()) // skipping partitions without producers
+            .collect(toMap(Map.Entry::getKey, e -> e.getValue().activeProducers())));
   }
 
   private Mono<Void> incrementalAlterConfig(String topicName,

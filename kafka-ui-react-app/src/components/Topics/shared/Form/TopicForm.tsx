@@ -93,9 +93,11 @@ const TopicForm: React.FC<Props> = ({
               <InputLabel htmlFor="topicFormName">Topic Name *</InputLabel>
               <Input
                 id="topicFormName"
+                autoFocus
                 name="name"
                 placeholder="Topic Name"
                 defaultValue={topicName}
+                autoComplete="off"
               />
               <FormError>
                 <ErrorMessage errors={errors} name="name" />
@@ -107,14 +109,16 @@ const TopicForm: React.FC<Props> = ({
             {!isEditing && (
               <div>
                 <InputLabel htmlFor="topicFormNumberOfPartitions">
-                  Number of partitions *
+                  Number of Partitions *
                 </InputLabel>
                 <Input
                   id="topicFormNumberOfPartitions"
                   type="number"
-                  placeholder="Number of partitions"
+                  placeholder="Number of Partitions"
                   min="1"
                   name="partitions"
+                  positiveOnly
+                  integerOnly
                 />
                 <FormError>
                   <ErrorMessage errors={errors} name="partitions" />
@@ -160,6 +164,8 @@ const TopicForm: React.FC<Props> = ({
               placeholder="Min In Sync Replicas"
               min="1"
               name="minInSyncReplicas"
+              positiveOnly
+              integerOnly
             />
             <FormError>
               <ErrorMessage errors={errors} name="minInSyncReplicas" />
@@ -176,6 +182,8 @@ const TopicForm: React.FC<Props> = ({
                 placeholder="Replication Factor"
                 min="1"
                 name="replicationFactor"
+                positiveOnly
+                integerOnly
               />
               <FormError>
                 <ErrorMessage errors={errors} name="replicationFactor" />
@@ -220,12 +228,14 @@ const TopicForm: React.FC<Props> = ({
             <InputLabel htmlFor="topicFormMaxMessageBytes">
               Maximum message size in bytes
             </InputLabel>
-            <Input
+            <S.MessageSizeInput
               id="topicFormMaxMessageBytes"
               type="number"
               placeholder="Maximum message size"
               min="1"
               name="maxMessageBytes"
+              positiveOnly
+              integerOnly
             />
             <FormError>
               <ErrorMessage errors={errors} name="maxMessageBytes" />
@@ -242,7 +252,7 @@ const TopicForm: React.FC<Props> = ({
         <S.ButtonWrapper>
           <Button
             type="button"
-            buttonType="primary"
+            buttonType="secondary"
             buttonSize="L"
             onClick={onCancel}
           >

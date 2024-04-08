@@ -1,5 +1,8 @@
 package com.provectus.kafka.ui.serdes.builtin.sr;
 
+import static com.provectus.kafka.ui.serdes.builtin.sr.Serialize.serializeAvro;
+import static com.provectus.kafka.ui.serdes.builtin.sr.Serialize.serializeJson;
+import static com.provectus.kafka.ui.serdes.builtin.sr.Serialize.serializeProto;
 import static io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig.BASIC_AUTH_CREDENTIALS_SOURCE;
 import static io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig.USER_INFO_CONFIG;
 
@@ -7,7 +10,6 @@ import com.google.common.annotations.VisibleForTesting;
 import com.provectus.kafka.ui.exception.ValidationException;
 import com.provectus.kafka.ui.serde.api.DeserializeResult;
 import com.provectus.kafka.ui.serde.api.PropertyResolver;
-import com.provectus.kafka.ui.serde.api.RecordHeaders;
 import com.provectus.kafka.ui.serde.api.SchemaDescription;
 import com.provectus.kafka.ui.serdes.BuiltInSerde;
 import com.provectus.kafka.ui.util.jsonschema.AvroJsonSchemaConverter;
@@ -20,6 +22,7 @@ import io.confluent.kafka.schemaregistry.client.SchemaMetadata;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClientConfig;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
+import io.confluent.kafka.schemaregistry.json.JsonSchema;
 import io.confluent.kafka.schemaregistry.json.JsonSchemaProvider;
 import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchema;
 import io.confluent.kafka.schemaregistry.protobuf.ProtobufSchemaProvider;
@@ -31,16 +34,20 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.Callable;
 import javax.annotation.Nullable;
-import lombok.RequiredArgsConstructor;
 import lombok.SneakyThrows;
 import org.apache.kafka.common.config.SslConfigs;
 
 
 public class SchemaRegistrySerde implements BuiltInSerde {
 
+  private static final byte SR_PAYLOAD_MAGIC_BYTE = 0x0;
+  private static final int SR_PAYLOAD_PREFIX_LENGTH = 5;
+
   public static String name() {
     return "SchemaRegistry";
   }
+
+  private static final String SCHEMA_REGISTRY = "schemaRegistry";
 
   private SchemaRegistryClient schemaRegistryClient;
   private List<String> schemaRegistryUrls;
@@ -53,7 +60,7 @@ public class SchemaRegistrySerde implements BuiltInSerde {
   @Override
   public boolean canBeAutoConfigured(PropertyResolver kafkaClusterProperties,
                                      PropertyResolver globalProperties) {
-    return kafkaClusterProperties.getListProperty("schemaRegistry", String.class)
+    return kafkaClusterProperties.getListProperty(SCHEMA_REGISTRY, String.class)
         .filter(lst -> !lst.isEmpty())
         .isPresent();
   }
@@ -61,7 +68,7 @@ public class SchemaRegistrySerde implements BuiltInSerde {
   @Override
   public void autoConfigure(PropertyResolver kafkaClusterProperties,
                             PropertyResolver globalProperties) {
-    var urls = kafkaClusterProperties.getListProperty("schemaRegistry", String.class)
+    var urls = kafkaClusterProperties.getListProperty(SCHEMA_REGISTRY, String.class)
         .filter(lst -> !lst.isEmpty())
         .orElseThrow(() -> new ValidationException("No urls provided for schema registry"));
     configure(
@@ -70,10 +77,10 @@ public class SchemaRegistrySerde implements BuiltInSerde {
             urls,
             kafkaClusterProperties.getProperty("schemaRegistryAuth.username", String.class).orElse(null),
             kafkaClusterProperties.getProperty("schemaRegistryAuth.password", String.class).orElse(null),
-            kafkaClusterProperties.getProperty("schemaRegistrySSL.keystoreLocation", String.class).orElse(null),
-            kafkaClusterProperties.getProperty("schemaRegistrySSL.keystorePassword", String.class).orElse(null),
-            kafkaClusterProperties.getProperty("schemaRegistrySSL.truststoreLocation", String.class).orElse(null),
-            kafkaClusterProperties.getProperty("schemaRegistrySSL.truststorePassword", String.class).orElse(null)
+            kafkaClusterProperties.getProperty("schemaRegistrySsl.keystoreLocation", String.class).orElse(null),
+            kafkaClusterProperties.getProperty("schemaRegistrySsl.keystorePassword", String.class).orElse(null),
+            kafkaClusterProperties.getProperty("ssl.truststoreLocation", String.class).orElse(null),
+            kafkaClusterProperties.getProperty("ssl.truststorePassword", String.class).orElse(null)
         ),
         kafkaClusterProperties.getProperty("schemaRegistryKeySchemaNameTemplate", String.class).orElse("%s-key"),
         kafkaClusterProperties.getProperty("schemaRegistrySchemaNameTemplate", String.class).orElse("%s-value"),
@@ -87,7 +94,7 @@ public class SchemaRegistrySerde implements BuiltInSerde {
                         PropertyResolver kafkaClusterProperties,
                         PropertyResolver globalProperties) {
     var urls = serdeProperties.getListProperty("url", String.class)
-        .or(() -> kafkaClusterProperties.getListProperty("schemaRegistry", String.class))
+        .or(() -> kafkaClusterProperties.getListProperty(SCHEMA_REGISTRY, String.class))
         .filter(lst -> !lst.isEmpty())
         .orElseThrow(() -> new ValidationException("No urls provided for schema registry"));
     configure(
@@ -98,12 +105,12 @@ public class SchemaRegistrySerde implements BuiltInSerde {
             serdeProperties.getProperty("password", String.class).orElse(null),
             serdeProperties.getProperty("keystoreLocation", String.class).orElse(null),
             serdeProperties.getProperty("keystorePassword", String.class).orElse(null),
-            serdeProperties.getProperty("truststoreLocation", String.class).orElse(null),
-            serdeProperties.getProperty("truststorePassword", String.class).orElse(null)
+            kafkaClusterProperties.getProperty("ssl.truststoreLocation", String.class).orElse(null),
+            kafkaClusterProperties.getProperty("ssl.truststorePassword", String.class).orElse(null)
         ),
         serdeProperties.getProperty("keySchemaNameTemplate", String.class).orElse("%s-key"),
         serdeProperties.getProperty("schemaNameTemplate", String.class).orElse("%s-value"),
-        kafkaClusterProperties.getProperty("checkSchemaExistenceForDeserialize", Boolean.class)
+        serdeProperties.getProperty("checkSchemaExistenceForDeserialize", Boolean.class)
             .orElse(false)
     );
   }
@@ -148,15 +155,15 @@ public class SchemaRegistrySerde implements BuiltInSerde {
           trustStoreLocation);
       configs.put(SchemaRegistryClientConfig.CLIENT_NAMESPACE + SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG,
           trustStorePassword);
+    }
 
-      if (keyStoreLocation != null) {
-        configs.put(SchemaRegistryClientConfig.CLIENT_NAMESPACE + SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG,
-            keyStoreLocation);
-        configs.put(SchemaRegistryClientConfig.CLIENT_NAMESPACE + SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG,
-            keyStorePassword);
-        configs.put(SchemaRegistryClientConfig.CLIENT_NAMESPACE + SslConfigs.SSL_KEY_PASSWORD_CONFIG,
-            keyStorePassword);
-      }
+    if (keyStoreLocation != null && keyStorePassword != null) {
+      configs.put(SchemaRegistryClientConfig.CLIENT_NAMESPACE + SslConfigs.SSL_KEYSTORE_LOCATION_CONFIG,
+          keyStoreLocation);
+      configs.put(SchemaRegistryClientConfig.CLIENT_NAMESPACE + SslConfigs.SSL_KEYSTORE_PASSWORD_CONFIG,
+          keyStorePassword);
+      configs.put(SchemaRegistryClientConfig.CLIENT_NAMESPACE + SslConfigs.SSL_KEY_PASSWORD_CONFIG,
+          keyStorePassword);
     }
 
     return new CachedSchemaRegistryClient(
@@ -189,39 +196,42 @@ public class SchemaRegistrySerde implements BuiltInSerde {
   public Optional<SchemaDescription> getSchema(String topic, Target type) {
     String subject = schemaSubject(topic, type);
     return getSchemaBySubject(subject)
-        .map(schemaMetadata ->
-            new SchemaDescription(
-                convertSchema(schemaMetadata),
-                Map.of(
-                    "subject", subject,
-                    "schemaId", schemaMetadata.getId(),
-                    "latestVersion", schemaMetadata.getVersion(),
-                    "type", schemaMetadata.getSchemaType() // AVRO / PROTOBUF / JSON
-                )
-            ));
+        .flatMap(schemaMetadata ->
+            //schema can be not-found, when schema contexts configured improperly
+            getSchemaById(schemaMetadata.getId())
+                .map(parsedSchema ->
+                    new SchemaDescription(
+                        convertSchema(schemaMetadata, parsedSchema),
+                        Map.of(
+                            "subject", subject,
+                            "schemaId", schemaMetadata.getId(),
+                            "latestVersion", schemaMetadata.getVersion(),
+                            "type", schemaMetadata.getSchemaType() // AVRO / PROTOBUF / JSON
+                        )
+                    )));
   }
 
   @SneakyThrows
-  private String convertSchema(SchemaMetadata schema) {
+  private String convertSchema(SchemaMetadata schema, ParsedSchema parsedSchema) {
     URI basePath = new URI(schemaRegistryUrls.get(0))
         .resolve(Integer.toString(schema.getId()));
-    ParsedSchema schemaById = schemaRegistryClient.getSchemaById(schema.getId());
     SchemaType schemaType = SchemaType.fromString(schema.getSchemaType())
         .orElseThrow(() -> new IllegalStateException("Unknown schema type: " + schema.getSchemaType()));
-    switch (schemaType) {
-      case PROTOBUF:
-        return new ProtobufSchemaConverter()
-            .convert(basePath, ((ProtobufSchema) schemaById).toDescriptor())
-            .toJson();
-      case AVRO:
-        return new AvroJsonSchemaConverter()
-            .convert(basePath, ((AvroSchema) schemaById).rawSchema())
-            .toJson();
-      case JSON:
-        return schema.getSchema();
-      default:
-        throw new IllegalStateException();
-    }
+    return switch (schemaType) {
+      case PROTOBUF -> new ProtobufSchemaConverter()
+          .convert(basePath, ((ProtobufSchema) parsedSchema).toDescriptor())
+          .toJson();
+      case AVRO -> new AvroJsonSchemaConverter()
+          .convert(basePath, ((AvroSchema) parsedSchema).rawSchema())
+          .toJson();
+      case JSON ->
+          //need to use confluent JsonSchema since it includes resolved references
+          ((JsonSchema) parsedSchema).rawSchema().toString();
+    };
+  }
+
+  private Optional<ParsedSchema> getSchemaById(int id) {
+    return wrapWith404Handler(() -> schemaRegistryClient.getSchemaById(id));
   }
 
   private Optional<SchemaMetadata> getSchemaBySubject(String subject) {
@@ -248,40 +258,27 @@ public class SchemaRegistrySerde implements BuiltInSerde {
   @Override
   public Serializer serializer(String topic, Target type) {
     String subject = schemaSubject(topic, type);
-    var schema = getSchemaBySubject(subject)
-        .orElseThrow(() -> new ValidationException(String.format("No schema for subject '%s' found", subject)));
-    boolean isKey = type == Target.KEY;
-    SchemaType schemaType = SchemaType.fromString(schema.getSchemaType())
-        .orElseThrow(() -> new IllegalStateException("Unknown schema type: " + schema.getSchemaType()));
-    switch (schemaType) {
-      case PROTOBUF:
-        return new ProtobufSchemaRegistrySerializer(topic, isKey, schemaRegistryClient, schema);
-      case AVRO:
-        return new AvroSchemaRegistrySerializer(topic, isKey, schemaRegistryClient, schema);
-      case JSON:
-        return new JsonSchemaSchemaRegistrySerializer(topic, isKey, schemaRegistryClient, schema);
-      default:
-        throw new IllegalStateException();
-    }
+    SchemaMetadata meta = getSchemaBySubject(subject)
+        .orElseThrow(() -> new ValidationException(
+            String.format("No schema for subject '%s' found", subject)));
+    ParsedSchema schema = getSchemaById(meta.getId())
+        .orElseThrow(() -> new IllegalStateException(
+            String.format("Schema found for id %s, subject '%s'", meta.getId(), subject)));
+    SchemaType schemaType = SchemaType.fromString(meta.getSchemaType())
+        .orElseThrow(() -> new IllegalStateException("Unknown schema type: " + meta.getSchemaType()));
+    return switch (schemaType) {
+      case PROTOBUF -> input ->
+          serializeProto(schemaRegistryClient, topic, type, (ProtobufSchema) schema, meta.getId(), input);
+      case AVRO -> input ->
+          serializeAvro((AvroSchema) schema, meta.getId(), input);
+      case JSON -> input ->
+          serializeJson((JsonSchema) schema, meta.getId(), input);
+    };
   }
 
   @Override
   public Deserializer deserializer(String topic, Target type) {
-    return new SrDeserializer(topic);
-  }
-
-  ///--------------------------------------------------------------
-
-  private static final byte SR_RECORD_MAGIC_BYTE = (byte) 0;
-  private static final int SR_RECORD_PREFIX_LENGTH = 5;
-
-  @RequiredArgsConstructor
-  private class SrDeserializer implements Deserializer {
-
-    private final String topic;
-
-    @Override
-    public DeserializeResult deserialize(RecordHeaders headers, byte[] data) {
+    return (headers, data) -> {
       var schemaId = extractSchemaIdFromMsg(data);
       SchemaType format = getMessageFormatBySchemaId(schemaId);
       MessageFormatter formatter = schemaRegistryFormatters.get(format);
@@ -293,11 +290,11 @@ public class SchemaRegistrySerde implements BuiltInSerde {
               "type", format.name()
           )
       );
-    }
+    };
   }
 
   private SchemaType getMessageFormatBySchemaId(int schemaId) {
-    return wrapWith404Handler(() -> schemaRegistryClient.getSchemaById(schemaId))
+    return getSchemaById(schemaId)
         .map(ParsedSchema::schemaType)
         .flatMap(SchemaType::fromString)
         .orElseThrow(() -> new ValidationException(String.format("Schema for id '%d' not found ", schemaId)));
@@ -305,7 +302,7 @@ public class SchemaRegistrySerde implements BuiltInSerde {
 
   private int extractSchemaIdFromMsg(byte[] data) {
     ByteBuffer buffer = ByteBuffer.wrap(data);
-    if (buffer.remaining() > SR_RECORD_PREFIX_LENGTH && buffer.get() == SR_RECORD_MAGIC_BYTE) {
+    if (buffer.remaining() >= SR_PAYLOAD_PREFIX_LENGTH && buffer.get() == SR_PAYLOAD_MAGIC_BYTE) {
       return buffer.getInt();
     }
     throw new ValidationException(

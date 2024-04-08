@@ -5,12 +5,15 @@ import org.jetbrains.annotations.Nullable;
 
 public enum Resource {
 
+  APPLICATIONCONFIG,
   CLUSTERCONFIG,
   TOPIC,
   CONSUMER,
   SCHEMA,
   CONNECT,
-  KSQL;
+  KSQL,
+  ACL,
+  AUDIT;
 
   @Nullable
   public static Resource fromString(String name) {

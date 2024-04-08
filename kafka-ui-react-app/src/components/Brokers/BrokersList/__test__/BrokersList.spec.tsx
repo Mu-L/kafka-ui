@@ -56,11 +56,11 @@ describe('BrokersList Component', () => {
       });
       it('opens broker when row clicked', async () => {
         renderComponent();
-        await userEvent.click(screen.getByRole('cell', { name: '0' }));
+        await userEvent.click(screen.getByRole('cell', { name: '100' }));
 
         await waitFor(() =>
           expect(mockedUsedNavigate).toBeCalledWith(
-            clusterBrokerPath(clusterName, '0')
+            clusterBrokerPath(clusterName, '100')
           )
         );
       });
@@ -124,6 +124,39 @@ describe('BrokersList Component', () => {
       });
     });
 
+    describe('BrokersList', () => {
+      describe('when the brokers are loaded', () => {
+        const testActiveControllers = 0;
+        beforeEach(() => {
+          (useBrokers as jest.Mock).mockImplementation(() => ({
+            data: brokersPayload,
+          }));
+          (useClusterStats as jest.Mock).mockImplementation(() => ({
+            data: clusterStatsPayload,
+          }));
+        });
+
+        it(`Indicates correct active cluster`, async () => {
+          renderComponent();
+          await waitFor(() =>
+            expect(screen.getByRole('tooltip')).toBeInTheDocument()
+          );
+        });
+        it(`Correct display even if there is no active cluster: ${testActiveControllers} `, async () => {
+          (useClusterStats as jest.Mock).mockImplementation(() => ({
+            data: {
+              ...clusterStatsPayload,
+              activeControllers: testActiveControllers,
+            },
+          }));
+          renderComponent();
+          await waitFor(() =>
+            expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+          );
+        });
+      });
+    });
+
     describe('when diskUsage is empty', () => {
       beforeEach(() => {
         (useBrokers as jest.Mock).mockImplementation(() => ({
@@ -145,7 +178,7 @@ describe('BrokersList Component', () => {
           renderComponent();
           expect(screen.getByRole('table')).toBeInTheDocument();
           expect(
-            screen.getByRole('row', { name: 'Disk usage data not available' })
+            screen.getByRole('row', { name: 'No clusters are online' })
           ).toBeInTheDocument();
         });
       });
@@ -157,11 +190,11 @@ describe('BrokersList Component', () => {
       });
       it('opens broker when row clicked', async () => {
         renderComponent();
-        await userEvent.click(screen.getByRole('cell', { name: '1' }));
+        await userEvent.click(screen.getByRole('cell', { name: '100' }));
 
         await waitFor(() =>
           expect(mockedUsedNavigate).toBeCalledWith(
-            clusterBrokerPath(clusterName, '1')
+            clusterBrokerPath(clusterName, '100')
           )
         );
       });

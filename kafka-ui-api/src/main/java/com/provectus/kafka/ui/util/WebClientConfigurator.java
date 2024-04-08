@@ -28,6 +28,9 @@ import reactor.netty.http.client.HttpClient;
 public class WebClientConfigurator {
 
   private final WebClient.Builder builder = WebClient.builder();
+  private HttpClient httpClient = HttpClient
+      .create()
+      .proxyWithSystemProperties();
 
   public WebClientConfigurator() {
     configureObjectMapper(defaultOM());
@@ -40,48 +43,43 @@ public class WebClientConfigurator {
         .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
   }
 
-
-  public WebClientConfigurator configureSsl(@Nullable ClustersProperties.WebClientSsl ssl) {
-    if (ssl != null) {
-      return configureSsl(
-          ssl.getKeystoreLocation(),
-          ssl.getKeystorePassword(),
-          ssl.getTruststoreLocation(),
-          ssl.getTruststorePassword()
-      );
-    }
-    return this;
+  public WebClientConfigurator configureSsl(@Nullable ClustersProperties.TruststoreConfig truststoreConfig,
+                                            @Nullable ClustersProperties.KeystoreConfig keystoreConfig) {
+    return configureSsl(
+        keystoreConfig != null ? keystoreConfig.getKeystoreLocation() : null,
+        keystoreConfig != null ? keystoreConfig.getKeystorePassword() : null,
+        truststoreConfig != null ? truststoreConfig.getTruststoreLocation() : null,
+        truststoreConfig != null ? truststoreConfig.getTruststorePassword() : null
+    );
   }
 
   @SneakyThrows
-  public WebClientConfigurator configureSsl(
+  private WebClientConfigurator configureSsl(
       @Nullable String keystoreLocation,
       @Nullable String keystorePassword,
       @Nullable String truststoreLocation,
       @Nullable String truststorePassword) {
-    // If we want to customize our TLS configuration, we need at least a truststore
-    if (truststoreLocation == null || truststorePassword == null) {
+    if (truststoreLocation == null && keystoreLocation == null) {
       return this;
     }
 
     SslContextBuilder contextBuilder = SslContextBuilder.forClient();
-
-    // Prepare truststore
-    KeyStore trustStore = KeyStore.getInstance("JKS");
-    trustStore.load(
-        new FileInputStream((ResourceUtils.getFile(truststoreLocation))),
-        truststorePassword.toCharArray()
-    );
-
-    TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(
-        TrustManagerFactory.getDefaultAlgorithm()
-    );
-    trustManagerFactory.init(trustStore);
-    contextBuilder.trustManager(trustManagerFactory);
+    if (truststoreLocation != null && truststorePassword != null) {
+      KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+      trustStore.load(
+          new FileInputStream((ResourceUtils.getFile(truststoreLocation))),
+          truststorePassword.toCharArray()
+      );
+      TrustManagerFactory trustManagerFactory = TrustManagerFactory.getInstance(
+          TrustManagerFactory.getDefaultAlgorithm()
+      );
+      trustManagerFactory.init(trustStore);
+      contextBuilder.trustManager(trustManagerFactory);
+    }
 
     // Prepare keystore only if we got a keystore
     if (keystoreLocation != null && keystorePassword != null) {
-      KeyStore keyStore = KeyStore.getInstance("JKS");
+      KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
       keyStore.load(
           new FileInputStream(ResourceUtils.getFile(keystoreLocation)),
           keystorePassword.toCharArray()
@@ -95,7 +93,7 @@ public class WebClientConfigurator {
     // Create webclient
     SslContext context = contextBuilder.build();
 
-    builder.clientConnector(new ReactorClientHttpConnector(HttpClient.create().secure(t -> t.sslContext(context))));
+    httpClient = httpClient.secure(t -> t.sslContext(context));
     return this;
   }
 
@@ -131,6 +129,6 @@ public class WebClientConfigurator {
   }
 
   public WebClient build() {
-    return builder.build();
+    return builder.clientConnector(new ReactorClientHttpConnector(httpClient)).build();
   }
 }

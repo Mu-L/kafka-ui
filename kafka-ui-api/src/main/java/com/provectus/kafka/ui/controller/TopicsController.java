@@ -22,14 +22,15 @@ import com.provectus.kafka.ui.model.TopicConfigDTO;
 import com.provectus.kafka.ui.model.TopicCreationDTO;
 import com.provectus.kafka.ui.model.TopicDTO;
 import com.provectus.kafka.ui.model.TopicDetailsDTO;
+import com.provectus.kafka.ui.model.TopicProducerStateDTO;
 import com.provectus.kafka.ui.model.TopicUpdateDTO;
 import com.provectus.kafka.ui.model.TopicsResponseDTO;
 import com.provectus.kafka.ui.model.rbac.AccessContext;
 import com.provectus.kafka.ui.service.TopicsService;
 import com.provectus.kafka.ui.service.analyze.TopicAnalysisService;
-import com.provectus.kafka.ui.service.rbac.AccessControlService;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import javax.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -51,70 +52,79 @@ public class TopicsController extends AbstractController implements TopicsApi {
   private final TopicsService topicsService;
   private final TopicAnalysisService topicAnalysisService;
   private final ClusterMapper clusterMapper;
-  private final AccessControlService accessControlService;
 
   @Override
   public Mono<ResponseEntity<TopicDTO>> createTopic(
-      String clusterName, @Valid Mono<TopicCreationDTO> topicCreation, ServerWebExchange exchange) {
+      String clusterName, @Valid Mono<TopicCreationDTO> topicCreationMono, ServerWebExchange exchange) {
+    return topicCreationMono.flatMap(topicCreation -> {
+      var context = AccessContext.builder()
+          .cluster(clusterName)
+          .topicActions(CREATE)
+          .operationName("createTopic")
+          .operationParams(topicCreation)
+          .build();
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
-        .cluster(clusterName)
-        .topicActions(CREATE)
-        .build());
-
-    return validateAccess.then(
-        topicsService.createTopic(getCluster(clusterName), topicCreation)
-            .map(clusterMapper::toTopic)
-            .map(s -> new ResponseEntity<>(s, HttpStatus.OK))
-            .switchIfEmpty(Mono.just(ResponseEntity.notFound().build()))
-    );
+      return validateAccess(context)
+          .then(topicsService.createTopic(getCluster(clusterName), topicCreation))
+          .map(clusterMapper::toTopic)
+          .map(s -> new ResponseEntity<>(s, HttpStatus.OK))
+          .switchIfEmpty(Mono.just(ResponseEntity.notFound().build()))
+          .doOnEach(sig -> audit(context, sig));
+    });
   }
 
   @Override
   public Mono<ResponseEntity<TopicDTO>> recreateTopic(String clusterName,
                                                       String topicName, ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(VIEW, CREATE, DELETE)
-        .build());
+        .operationName("recreateTopic")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         topicsService.recreateTopic(getCluster(clusterName), topicName)
             .map(clusterMapper::toTopic)
             .map(s -> new ResponseEntity<>(s, HttpStatus.CREATED))
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
   public Mono<ResponseEntity<TopicDTO>> cloneTopic(
       String clusterName, String topicName, String newTopicName, ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(VIEW, CREATE)
-        .build());
+        .operationName("cloneTopic")
+        .operationParams(Map.of("newTopicName", newTopicName))
+        .build();
 
-    return validateAccess.then(topicsService.cloneTopic(getCluster(clusterName), topicName, newTopicName)
-        .map(clusterMapper::toTopic)
-        .map(s -> new ResponseEntity<>(s, HttpStatus.CREATED))
-    );
+    return validateAccess(context)
+        .then(topicsService.cloneTopic(getCluster(clusterName), topicName, newTopicName)
+            .map(clusterMapper::toTopic)
+            .map(s -> new ResponseEntity<>(s, HttpStatus.CREATED))
+        ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
   public Mono<ResponseEntity<Void>> deleteTopic(
       String clusterName, String topicName, ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(DELETE)
-        .build());
+        .operationName("deleteTopic")
+        .build();
 
-    return validateAccess.then(
-        topicsService.deleteTopic(getCluster(clusterName), topicName).map(ResponseEntity::ok)
-    );
+    return validateAccess(context)
+        .then(
+            topicsService.deleteTopic(getCluster(clusterName), topicName)
+                .thenReturn(ResponseEntity.ok().<Void>build())
+        ).doOnEach(sig -> audit(context, sig));
   }
 
 
@@ -122,38 +132,40 @@ public class TopicsController extends AbstractController implements TopicsApi {
   public Mono<ResponseEntity<Flux<TopicConfigDTO>>> getTopicConfigs(
       String clusterName, String topicName, ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(VIEW)
-        .build());
+        .operationName("getTopicConfigs")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         topicsService.getTopicConfigs(getCluster(clusterName), topicName)
             .map(lst -> lst.stream()
                 .map(InternalTopicConfig::from)
                 .map(clusterMapper::toTopicConfig)
-                .collect(toList()))
+                .toList())
             .map(Flux::fromIterable)
             .map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
   public Mono<ResponseEntity<TopicDetailsDTO>> getTopicDetails(
       String clusterName, String topicName, ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(VIEW)
-        .build());
+        .operationName("getTopicDetails")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         topicsService.getTopicDetails(getCluster(clusterName), topicName)
             .map(clusterMapper::toTopicDetails)
             .map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
@@ -166,13 +178,19 @@ public class TopicsController extends AbstractController implements TopicsApi {
                                                            @Valid SortOrderDTO sortOrder,
                                                            ServerWebExchange exchange) {
 
+    AccessContext context = AccessContext.builder()
+        .cluster(clusterName)
+        .operationName("getTopics")
+        .build();
+
     return topicsService.getTopicsForPagination(getCluster(clusterName))
-        .flatMap(existingTopics -> {
+        .flatMap(topics -> accessControlService.filterViewableTopics(topics, clusterName))
+        .flatMap(topics -> {
           int pageSize = perPage != null && perPage > 0 ? perPage : DEFAULT_PAGE_SIZE;
           var topicsToSkip = ((page != null && page > 0 ? page : 1) - 1) * pageSize;
           var comparator = sortOrder == null || !sortOrder.equals(SortOrderDTO.DESC)
               ? getComparatorForTopic(orderBy) : getComparatorForTopic(orderBy).reversed();
-          List<InternalTopic> filtered = existingTopics.stream()
+          List<InternalTopic> filtered = topics.stream()
               .filter(topic -> !topic.isInternal()
                   || showInternal != null && showInternal)
               .filter(topic -> search == null || StringUtils.containsIgnoreCase(topic.getName(), search))
@@ -188,15 +206,13 @@ public class TopicsController extends AbstractController implements TopicsApi {
               .collect(toList());
 
           return topicsService.loadTopics(getCluster(clusterName), topicsPage)
-              .flatMapMany(Flux::fromIterable)
-              .filterWhen(dto -> accessControlService.isTopicAccessible(dto, clusterName))
-              .collectList()
               .map(topicsToRender ->
                   new TopicsResponseDTO()
-                      .topics(topicsToRender.stream().map(clusterMapper::toTopic).collect(toList()))
+                      .topics(topicsToRender.stream().map(clusterMapper::toTopic).toList())
                       .pageCount(totalPages));
         })
-        .map(ResponseEntity::ok);
+        .map(ResponseEntity::ok)
+        .doOnEach(sig -> audit(context, sig));
   }
 
   @Override
@@ -204,18 +220,19 @@ public class TopicsController extends AbstractController implements TopicsApi {
       String clusterName, String topicName, @Valid Mono<TopicUpdateDTO> topicUpdate,
       ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(VIEW, EDIT)
-        .build());
+        .operationName("updateTopic")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         topicsService
             .updateTopic(getCluster(clusterName), topicName, topicUpdate)
             .map(clusterMapper::toTopic)
             .map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
@@ -224,17 +241,17 @@ public class TopicsController extends AbstractController implements TopicsApi {
       Mono<PartitionsIncreaseDTO> partitionsIncrease,
       ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(VIEW, EDIT)
-        .build());
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         partitionsIncrease.flatMap(partitions ->
             topicsService.increaseTopicPartitions(getCluster(clusterName), topicName, partitions)
         ).map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
@@ -243,31 +260,34 @@ public class TopicsController extends AbstractController implements TopicsApi {
       Mono<ReplicationFactorChangeDTO> replicationFactorChange,
       ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(VIEW, EDIT)
-        .build());
+        .operationName("changeReplicationFactor")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         replicationFactorChange
             .flatMap(rfc ->
                 topicsService.changeReplicationFactor(getCluster(clusterName), topicName, rfc))
             .map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
   public Mono<ResponseEntity<Void>> analyzeTopic(String clusterName, String topicName, ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(MESSAGES_READ)
-        .build());
+        .operationName("analyzeTopic")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         topicAnalysisService.analyze(getCluster(clusterName), topicName)
+            .doOnEach(sig -> audit(context, sig))
             .thenReturn(ResponseEntity.ok().build())
     );
   }
@@ -275,15 +295,17 @@ public class TopicsController extends AbstractController implements TopicsApi {
   @Override
   public Mono<ResponseEntity<Void>> cancelTopicAnalysis(String clusterName, String topicName,
                                                         ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(MESSAGES_READ)
-        .build());
+        .operationName("cancelTopicAnalysis")
+        .build();
 
-    topicAnalysisService.cancelAnalysis(getCluster(clusterName), topicName);
-
-    return validateAccess.thenReturn(ResponseEntity.ok().build());
+    return validateAccess(context)
+        .then(Mono.fromRunnable(() -> topicAnalysisService.cancelAnalysis(getCluster(clusterName), topicName)))
+        .doOnEach(sig -> audit(context, sig))
+        .thenReturn(ResponseEntity.ok().build());
   }
 
 
@@ -292,15 +314,46 @@ public class TopicsController extends AbstractController implements TopicsApi {
                                                                  String topicName,
                                                                  ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(MESSAGES_READ)
-        .build());
+        .operationName("getTopicAnalysis")
+        .build();
 
-    return validateAccess.thenReturn(topicAnalysisService.getTopicAnalysis(getCluster(clusterName), topicName)
+    return validateAccess(context)
+        .thenReturn(topicAnalysisService.getTopicAnalysis(getCluster(clusterName), topicName)
+            .map(ResponseEntity::ok)
+            .orElseGet(() -> ResponseEntity.notFound().build()))
+        .doOnEach(sig -> audit(context, sig));
+  }
+
+  @Override
+  public Mono<ResponseEntity<Flux<TopicProducerStateDTO>>> getActiveProducerStates(String clusterName,
+                                                                                   String topicName,
+                                                                                   ServerWebExchange exchange) {
+    var context = AccessContext.builder()
+        .cluster(clusterName)
+        .topic(topicName)
+        .topicActions(VIEW)
+        .operationName("getActiveProducerStates")
+        .build();
+
+    Comparator<TopicProducerStateDTO> ordering =
+        Comparator.comparingInt(TopicProducerStateDTO::getPartition)
+            .thenComparing(Comparator.comparing(TopicProducerStateDTO::getProducerId).reversed());
+
+    Flux<TopicProducerStateDTO> states = topicsService.getActiveProducersState(getCluster(clusterName), topicName)
+        .flatMapMany(statesMap ->
+            Flux.fromStream(
+                statesMap.entrySet().stream()
+                    .flatMap(e -> e.getValue().stream().map(p -> clusterMapper.map(e.getKey().partition(), p)))
+                    .sorted(ordering)));
+
+    return validateAccess(context)
+        .thenReturn(states)
         .map(ResponseEntity::ok)
-        .orElseGet(() -> ResponseEntity.notFound().build()));
+        .doOnEach(sig -> audit(context, sig));
   }
 
   private Comparator<InternalTopic> getComparatorForTopic(

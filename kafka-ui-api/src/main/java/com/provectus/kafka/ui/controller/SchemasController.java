@@ -13,9 +13,8 @@ import com.provectus.kafka.ui.model.SchemaSubjectsResponseDTO;
 import com.provectus.kafka.ui.model.rbac.AccessContext;
 import com.provectus.kafka.ui.model.rbac.permission.SchemaAction;
 import com.provectus.kafka.ui.service.SchemaRegistryService;
-import com.provectus.kafka.ui.service.rbac.AccessControlService;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Map;
 import javax.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -36,7 +35,6 @@ public class SchemasController extends AbstractController implements SchemasApi 
   private final KafkaSrMapper kafkaSrMapper = new KafkaSrMapperImpl();
 
   private final SchemaRegistryService schemaRegistryService;
-  private final AccessControlService accessControlService;
 
   @Override
   protected KafkaCluster getCluster(String clusterName) {
@@ -51,13 +49,14 @@ public class SchemasController extends AbstractController implements SchemasApi 
   public Mono<ResponseEntity<CompatibilityCheckResponseDTO>> checkSchemaCompatibility(
       String clusterName, String subject, @Valid Mono<NewSchemaSubjectDTO> newSchemaSubjectMono,
       ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schema(subject)
         .schemaActions(SchemaAction.VIEW)
-        .build());
+        .operationName("checkSchemaCompatibility")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         newSchemaSubjectMono.flatMap(subjectDTO ->
                 schemaRegistryService.checksSchemaCompatibility(
                     getCluster(clusterName),
@@ -66,19 +65,20 @@ public class SchemasController extends AbstractController implements SchemasApi 
                 ))
             .map(kafkaSrMapper::toDto)
             .map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
   public Mono<ResponseEntity<SchemaSubjectDTO>> createNewSchema(
       String clusterName, @Valid Mono<NewSchemaSubjectDTO> newSchemaSubjectMono,
       ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schemaActions(SchemaAction.CREATE)
-        .build());
+        .operationName("createNewSchema")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         newSchemaSubjectMono.flatMap(newSubject ->
                 schemaRegistryService.registerNewSchema(
                     getCluster(clusterName),
@@ -87,20 +87,22 @@ public class SchemasController extends AbstractController implements SchemasApi 
                 )
             ).map(kafkaSrMapper::toDto)
             .map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
   public Mono<ResponseEntity<Void>> deleteLatestSchema(
       String clusterName, String subject, ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schema(subject)
         .schemaActions(SchemaAction.DELETE)
-        .build());
+        .operationName("deleteLatestSchema")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         schemaRegistryService.deleteLatestSchemaSubject(getCluster(clusterName), subject)
+            .doOnEach(sig -> audit(context, sig))
             .thenReturn(ResponseEntity.ok().build())
     );
   }
@@ -108,14 +110,16 @@ public class SchemasController extends AbstractController implements SchemasApi 
   @Override
   public Mono<ResponseEntity<Void>> deleteSchema(
       String clusterName, String subject, ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schema(subject)
         .schemaActions(SchemaAction.DELETE)
-        .build());
+        .operationName("deleteSchema")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         schemaRegistryService.deleteSchemaSubjectEntirely(getCluster(clusterName), subject)
+            .doOnEach(sig -> audit(context, sig))
             .thenReturn(ResponseEntity.ok().build())
     );
   }
@@ -123,14 +127,16 @@ public class SchemasController extends AbstractController implements SchemasApi 
   @Override
   public Mono<ResponseEntity<Void>> deleteSchemaByVersion(
       String clusterName, String subjectName, Integer version, ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schema(subjectName)
         .schemaActions(SchemaAction.DELETE)
-        .build());
+        .operationName("deleteSchemaByVersion")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         schemaRegistryService.deleteSchemaSubjectByVersion(getCluster(clusterName), subjectName, version)
+            .doOnEach(sig -> audit(context, sig))
             .thenReturn(ResponseEntity.ok().build())
     );
   }
@@ -138,16 +144,20 @@ public class SchemasController extends AbstractController implements SchemasApi 
   @Override
   public Mono<ResponseEntity<Flux<SchemaSubjectDTO>>> getAllVersionsBySubject(
       String clusterName, String subjectName, ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schema(subjectName)
         .schemaActions(SchemaAction.VIEW)
-        .build());
+        .operationName("getAllVersionsBySubject")
+        .build();
 
     Flux<SchemaSubjectDTO> schemas =
         schemaRegistryService.getAllVersionsBySubject(getCluster(clusterName), subjectName)
             .map(kafkaSrMapper::toDto);
-    return validateAccess.thenReturn(ResponseEntity.ok(schemas));
+
+    return validateAccess(context)
+        .thenReturn(ResponseEntity.ok(schemas))
+        .doOnEach(sig -> audit(context, sig));
   }
 
   @Override
@@ -163,34 +173,37 @@ public class SchemasController extends AbstractController implements SchemasApi 
   public Mono<ResponseEntity<SchemaSubjectDTO>> getLatestSchema(String clusterName,
                                                                 String subject,
                                                                 ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schema(subject)
         .schemaActions(SchemaAction.VIEW)
-        .build());
+        .operationName("getLatestSchema")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         schemaRegistryService.getLatestSchemaVersionBySubject(getCluster(clusterName), subject)
             .map(kafkaSrMapper::toDto)
             .map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
   public Mono<ResponseEntity<SchemaSubjectDTO>> getSchemaByVersion(
       String clusterName, String subject, Integer version, ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schema(subject)
         .schemaActions(SchemaAction.VIEW)
-        .build());
+        .operationName("getSchemaByVersion")
+        .operationParams(Map.of("subject", subject, "version", version))
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         schemaRegistryService.getSchemaSubjectByVersion(
                 getCluster(clusterName), subject, version)
             .map(kafkaSrMapper::toDto)
             .map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
@@ -199,6 +212,11 @@ public class SchemasController extends AbstractController implements SchemasApi 
                                                                     @Valid Integer perPage,
                                                                     @Valid String search,
                                                                     ServerWebExchange serverWebExchange) {
+    var context = AccessContext.builder()
+        .cluster(clusterName)
+        .operationName("getSchemas")
+        .build();
+
     return schemaRegistryService
         .getAllSubjectNames(getCluster(clusterName))
         .flatMapIterable(l -> l)
@@ -216,29 +234,32 @@ public class SchemasController extends AbstractController implements SchemasApi 
           List<String> subjectsToRender = filteredSubjects.stream()
               .skip(subjectToSkip)
               .limit(pageSize)
-              .collect(Collectors.toList());
+              .toList();
           return schemaRegistryService.getAllLatestVersionSchemas(getCluster(clusterName), subjectsToRender)
               .map(subjs -> subjs.stream().map(kafkaSrMapper::toDto).toList())
               .map(subjs -> new SchemaSubjectsResponseDTO().pageCount(totalPages).schemas(subjs));
-        }).map(ResponseEntity::ok);
+        }).map(ResponseEntity::ok)
+        .doOnEach(sig -> audit(context, sig));
   }
 
   @Override
   public Mono<ResponseEntity<Void>> updateGlobalSchemaCompatibilityLevel(
       String clusterName, @Valid Mono<CompatibilityLevelDTO> compatibilityLevelMono,
       ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schemaActions(SchemaAction.MODIFY_GLOBAL_COMPATIBILITY)
-        .build());
+        .operationName("updateGlobalSchemaCompatibilityLevel")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         compatibilityLevelMono
             .flatMap(compatibilityLevelDTO ->
                 schemaRegistryService.updateGlobalSchemaCompatibility(
                     getCluster(clusterName),
                     kafkaSrMapper.fromDto(compatibilityLevelDTO.getCompatibility())
                 ))
+            .doOnEach(sig -> audit(context, sig))
             .thenReturn(ResponseEntity.ok().build())
     );
   }
@@ -247,12 +268,14 @@ public class SchemasController extends AbstractController implements SchemasApi 
   public Mono<ResponseEntity<Void>> updateSchemaCompatibilityLevel(
       String clusterName, String subject, @Valid Mono<CompatibilityLevelDTO> compatibilityLevelMono,
       ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .schemaActions(SchemaAction.EDIT)
-        .build());
+        .operationName("updateSchemaCompatibilityLevel")
+        .operationParams(Map.of("subject", subject))
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         compatibilityLevelMono
             .flatMap(compatibilityLevelDTO ->
                 schemaRegistryService.updateSchemaCompatibility(
@@ -260,6 +283,7 @@ public class SchemasController extends AbstractController implements SchemasApi 
                     subject,
                     kafkaSrMapper.fromDto(compatibilityLevelDTO.getCompatibility())
                 ))
+            .doOnEach(sig -> audit(context, sig))
             .thenReturn(ResponseEntity.ok().build())
     );
   }

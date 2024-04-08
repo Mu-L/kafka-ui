@@ -1,60 +1,46 @@
 import React from 'react';
 import WarningIcon from 'components/common/Icons/WarningIcon';
 import { gitCommitPath } from 'lib/paths';
-import { useActuatorInfo } from 'lib/hooks/api/actuatorInfo';
-import { BUILD_VERSION_PATTERN } from 'lib/constants';
 import { useLatestVersion } from 'lib/hooks/api/latestVersion';
 import { formatTimestamp } from 'lib/dateTimeHelpers';
 
 import * as S from './Version.styled';
-import compareVersions from './compareVersions';
-
-export interface VesionProps {
-  tag: string;
-  commit?: string;
-}
 
 const Version: React.FC = () => {
-  const { data: actuatorInfo = {} } = useActuatorInfo();
   const { data: latestVersionInfo = {} } = useLatestVersion();
+  const { buildTime, commitId, isLatestRelease, version } =
+    latestVersionInfo.build;
+  const { versionTag } = latestVersionInfo?.latestRelease || '';
 
-  const tag = actuatorInfo?.build?.version;
-  const commit = actuatorInfo?.git?.commit.id;
-  const { tag_name: latestTag } = latestVersionInfo;
-
-  const outdated = compareVersions(tag, latestTag);
-
-  const currentVersion = tag?.match(BUILD_VERSION_PATTERN)
-    ? tag
-    : formatTimestamp(actuatorInfo?.build?.time);
-
-  if (!tag) return null;
+  const currentVersion =
+    isLatestRelease && version?.match(versionTag)
+      ? versionTag
+      : formatTimestamp(buildTime);
 
   return (
     <S.Wrapper>
-      <S.CurrentVersion>{currentVersion}</S.CurrentVersion>
-
-      {!!outdated && (
+      {!isLatestRelease && (
         <S.OutdatedWarning
-          title={`Your app version is outdated. Current latest version is ${latestTag}`}
+          title={`Your app version is outdated. Latest version is ${
+            versionTag || 'UNKNOWN'
+          }`}
         >
           <WarningIcon />
         </S.OutdatedWarning>
       )}
 
-      {commit && (
-        <>
-          <S.SymbolWrapper>&#40;</S.SymbolWrapper>
+      {commitId && (
+        <div>
           <S.CurrentCommitLink
             title="Current commit"
             target="__blank"
-            href={gitCommitPath(commit)}
+            href={gitCommitPath(commitId)}
           >
-            {commit}
+            {commitId}
           </S.CurrentCommitLink>
-          <S.SymbolWrapper>&#41;</S.SymbolWrapper>
-        </>
+        </div>
       )}
+      <S.CurrentVersion>{currentVersion}</S.CurrentVersion>
     </S.Wrapper>
   );
 };

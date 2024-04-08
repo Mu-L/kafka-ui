@@ -10,12 +10,14 @@ import com.provectus.kafka.ui.model.BrokersLogdirsDTO;
 import com.provectus.kafka.ui.model.InternalBroker;
 import com.provectus.kafka.ui.model.InternalBrokerConfig;
 import com.provectus.kafka.ui.model.KafkaCluster;
+import com.provectus.kafka.ui.model.PartitionDistributionStats;
 import com.provectus.kafka.ui.service.metrics.RawMetric;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import javax.annotation.Nullable;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.admin.ConfigEntry;
@@ -64,11 +66,13 @@ public class BrokerService {
   }
 
   public Flux<InternalBroker> getBrokers(KafkaCluster cluster) {
+    var stats = statisticsCache.get(cluster);
+    var partitionsDistribution = PartitionDistributionStats.create(stats);
     return adminClientService
         .get(cluster)
         .flatMap(ReactiveAdminClient::describeCluster)
         .map(description -> description.getNodes().stream()
-            .map(node -> new InternalBroker(node, statisticsCache.get(cluster)))
+            .map(node -> new InternalBroker(node, partitionsDistribution, stats))
             .collect(Collectors.toList()))
         .flatMapMany(Flux::fromIterable);
   }
@@ -114,7 +118,7 @@ public class BrokerService {
               .stream()
               .map(Node::id)
               .collect(Collectors.toList());
-          if (reqBrokers != null && !reqBrokers.isEmpty()) {
+          if (!reqBrokers.isEmpty()) {
             brokers.retainAll(reqBrokers);
           }
           return admin.describeLogDirs(brokers);

@@ -10,12 +10,14 @@ import {
   clusterTopicMessagesPath,
   clusterTopicPath,
   clusterTopicSettingsPath,
+  clusterTopicsPath,
   clusterTopicStatisticsPath,
   getNonExactPath,
 } from 'lib/paths';
 import { CleanUpPolicy, Topic } from 'generated-sources';
 import { externalTopicPayload } from 'lib/fixtures/topics';
 import {
+  useClearTopicMessages,
   useDeleteTopic,
   useRecreateTopic,
   useTopicDetails,
@@ -31,9 +33,11 @@ jest.mock('lib/hooks/api/topics', () => ({
   useTopicDetails: jest.fn(),
   useDeleteTopic: jest.fn(),
   useRecreateTopic: jest.fn(),
+  useClearTopicMessages: jest.fn(),
 }));
 
 const unwrapMock = jest.fn();
+const clearTopicMessages = jest.fn();
 
 jest.mock('lib/hooks/redux', () => ({
   ...jest.requireActual('lib/hooks/redux'),
@@ -98,6 +102,9 @@ describe('Details', () => {
     (useRecreateTopic as jest.Mock).mockImplementation(() => ({
       mutateAsync: mockRecreate,
     }));
+    (useClearTopicMessages as jest.Mock).mockImplementation(() => ({
+      mutateAsync: clearTopicMessages,
+    }));
     (useAppDispatch as jest.Mock).mockImplementation(() => () => ({
       unwrap: unwrapMock,
     }));
@@ -145,7 +152,7 @@ describe('Details', () => {
           name: 'Confirm',
         })[0];
         await waitFor(() => userEvent.click(submitButton));
-        expect(unwrapMock).toHaveBeenCalledTimes(1);
+        expect(clearTopicMessages).toHaveBeenCalledTimes(1);
       });
 
       it('closes the modal when cancel button is clicked', async () => {
@@ -173,7 +180,9 @@ describe('Details', () => {
         name: 'Confirm',
       });
       await userEvent.click(submitDeleteButton);
-      expect(mockNavigate).toHaveBeenCalledWith('../..');
+      expect(mockNavigate).toHaveBeenCalledWith(
+        clusterTopicsPath(mockClusterName)
+      );
     });
 
     it('shows a confirmation popup on deleting topic messages', async () => {

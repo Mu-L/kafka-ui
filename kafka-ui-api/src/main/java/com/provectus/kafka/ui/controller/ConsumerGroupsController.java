@@ -19,11 +19,9 @@ import com.provectus.kafka.ui.model.rbac.AccessContext;
 import com.provectus.kafka.ui.model.rbac.permission.TopicAction;
 import com.provectus.kafka.ui.service.ConsumerGroupService;
 import com.provectus.kafka.ui.service.OffsetsResetService;
-import com.provectus.kafka.ui.service.rbac.AccessControlService;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,7 +39,6 @@ public class ConsumerGroupsController extends AbstractController implements Cons
 
   private final ConsumerGroupService consumerGroupService;
   private final OffsetsResetService offsetsResetService;
-  private final AccessControlService accessControlService;
 
   @Value("${consumer.groups.page.size:25}")
   private int defaultConsumerGroupsPageSize;
@@ -50,44 +47,47 @@ public class ConsumerGroupsController extends AbstractController implements Cons
   public Mono<ResponseEntity<Void>> deleteConsumerGroup(String clusterName,
                                                         String id,
                                                         ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .consumerGroup(id)
         .consumerGroupActions(DELETE)
-        .build());
+        .operationName("deleteConsumerGroup")
+        .build();
 
-    return validateAccess.then(
-        consumerGroupService.deleteConsumerGroupById(getCluster(clusterName), id)
-            .thenReturn(ResponseEntity.ok().build())
-    );
+    return validateAccess(context)
+        .then(consumerGroupService.deleteConsumerGroupById(getCluster(clusterName), id))
+        .doOnEach(sig -> audit(context, sig))
+        .thenReturn(ResponseEntity.ok().build());
   }
 
   @Override
   public Mono<ResponseEntity<ConsumerGroupDetailsDTO>> getConsumerGroup(String clusterName,
                                                                         String consumerGroupId,
                                                                         ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .consumerGroup(consumerGroupId)
         .consumerGroupActions(VIEW)
-        .build());
+        .operationName("getConsumerGroup")
+        .build();
 
-    return validateAccess.then(
-        consumerGroupService.getConsumerGroupDetail(getCluster(clusterName), consumerGroupId)
+    return validateAccess(context)
+        .then(consumerGroupService.getConsumerGroupDetail(getCluster(clusterName), consumerGroupId)
             .map(ConsumerGroupMapper::toDetailsDto)
-            .map(ResponseEntity::ok)
-    );
+            .map(ResponseEntity::ok))
+        .doOnEach(sig -> audit(context, sig));
   }
 
   @Override
   public Mono<ResponseEntity<Flux<ConsumerGroupDTO>>> getTopicConsumerGroups(String clusterName,
                                                                              String topicName,
                                                                              ServerWebExchange exchange) {
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         .topic(topicName)
         .topicActions(TopicAction.VIEW)
-        .build());
+        .operationName("getTopicConsumerGroups")
+        .build();
 
     Mono<ResponseEntity<Flux<ConsumerGroupDTO>>> job =
         consumerGroupService.getConsumerGroupsForTopic(getCluster(clusterName), topicName)
@@ -99,7 +99,9 @@ public class ConsumerGroupsController extends AbstractController implements Cons
             .map(ResponseEntity::ok)
             .switchIfEmpty(Mono.just(ResponseEntity.notFound().build()));
 
-    return validateAccess.then(job);
+    return validateAccess(context)
+        .then(job)
+        .doOnEach(sig -> audit(context, sig));
   }
 
   @Override
@@ -112,12 +114,13 @@ public class ConsumerGroupsController extends AbstractController implements Cons
       SortOrderDTO sortOrderDto,
       ServerWebExchange exchange) {
 
-    Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+    var context = AccessContext.builder()
         .cluster(clusterName)
         // consumer group access validation is within the service
-        .build());
+        .operationName("getConsumerGroupsPage")
+        .build();
 
-    return validateAccess.then(
+    return validateAccess(context).then(
         consumerGroupService.getConsumerGroupsPage(
                 getCluster(clusterName),
                 Optional.ofNullable(page).filter(i -> i > 0).orElse(1),
@@ -128,7 +131,7 @@ public class ConsumerGroupsController extends AbstractController implements Cons
             )
             .map(this::convertPage)
             .map(ResponseEntity::ok)
-    );
+    ).doOnEach(sig -> audit(context, sig));
   }
 
   @Override
@@ -137,12 +140,13 @@ public class ConsumerGroupsController extends AbstractController implements Cons
                                                               Mono<ConsumerGroupOffsetsResetDTO> resetDto,
                                                               ServerWebExchange exchange) {
     return resetDto.flatMap(reset -> {
-      Mono<Void> validateAccess = accessControlService.validateAccess(AccessContext.builder()
+      var context = AccessContext.builder()
           .cluster(clusterName)
           .topic(reset.getTopic())
           .topicActions(TopicAction.VIEW)
           .consumerGroupActions(RESET_OFFSETS)
-          .build());
+          .operationName("resetConsumerGroupOffsets")
+          .build();
 
       Supplier<Mono<Void>> mono = () -> {
         var cluster = getCluster(clusterName);
@@ -182,7 +186,9 @@ public class ConsumerGroupsController extends AbstractController implements Cons
         }
       };
 
-      return validateAccess.then(mono.get());
+      return validateAccess(context)
+          .then(mono.get())
+          .doOnEach(sig -> audit(context, sig));
     }).thenReturn(ResponseEntity.ok().build());
   }
 
@@ -193,7 +199,7 @@ public class ConsumerGroupsController extends AbstractController implements Cons
         .consumerGroups(consumerGroupConsumerGroupsPage.consumerGroups()
             .stream()
             .map(ConsumerGroupMapper::toDto)
-            .collect(Collectors.toList()));
+            .toList());
   }
 
 }
